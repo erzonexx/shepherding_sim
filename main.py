@@ -27,6 +27,11 @@ def main():
     if step_count >= config.MAX_STEPS:
         print("⚠️ Maximum steps reached, simulation terminated.")
 
+    # Export the recorded simulation data
+    print("Exporting simulation data...")
+    env.export_data("simulation_data.csv")
+    print("✅ Data successfully saved to simulation_data.csv")
+
     vis.close()
 
 if __name__ == "__main__":

@@ -1,5 +1,8 @@
 import numpy as np
 import config
+import csv
+import os
+from datetime import datetime
 
 class SwarmEnv:
     def __init__(self):
@@ -11,8 +14,34 @@ class SwarmEnv:
         self.dog_pos = np.copy(config.DOG_START_POS)
         self.dog_vel = np.zeros(2)
 
+        # variables for experimental data recording
+        self.current_frame = 0
+        self.history_data = []
+
+    def _record_state(self):
+        # Record Dog's state
+        self.history_data.append([self.current_frame, 'Dog', 0, self.dog_pos[0], self.dog_pos[1]])
+        # Record each Sheep's state
+        for i, pos in enumerate(self.sheep_pos):
+            self.history_data.append([self.current_frame, 'Sheep', i, pos[0], pos[1]])
+
+    def export_data(self, filename):
+        if not os.path.exists('logs'):
+            os.makedirs('logs')
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_path = os.path.join('logs', f"simulation_{timestamp}.csv")
+        
+        with open(export_path, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Frame', 'Agent_Type', 'Agent_ID', 'X', 'Y'])
+            writer.writerows(self.history_data)
+
     def step(self):
         """execute one frame of physics calculation. if the sheep reaches the goal, return True"""
+        self._record_state()
+        self.current_frame += 1
+
         # 1. calculate the sheep's center of mass (Center of Mass)
         com = np.mean(self.sheep_pos, axis=0)
         
