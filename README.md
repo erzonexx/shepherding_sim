@@ -100,6 +100,14 @@ Upon completion, the `logs/data` and `logs/visuals` folders will be automaticall
 
 ---
 
+## 開発者・共同研究者の方へ (For Developers & Collaborators)
+
+本リポジトリでは、シミュレーションによって生成される大容量のデータファイルや画像ファイル（`.parquet`, `.png`, `.gif`）は、Git の追跡対象外（`.gitignore`）に設定されています。新しくリポジトリをクローンして実行した場合、`logs/` ディレクトリはローカル環境にのみ自動生成され、リモートリポジトリ（GitHubなど）の容量を圧迫することはありません。
+
+In this repository, the generated simulation data and visual files (`.parquet`, `.png`, `.gif`) are explicitly ignored by Git via `.gitignore`. When you clone the repository and run the simulation, the `logs/` directory will be automatically generated locally, preventing these large files from bloating the remote repository.
+
+---
+
 ## 📊 データ仕様 (Data Schema) - [足立さんへ / For Adachi-san]
 
 足立さんの「危険判定アルゴリズム (Danger Judgment Algorithm)」開発用データスキーマです。
