@@ -1,11 +1,13 @@
 from environment import SwarmEnv
 from visualizer import Visualizer
 import config
+from datetime import datetime
 
 def main():
-    print("Initializing simulation environment...")
+    mode_msg = "Fixed Mode (Seed 42)" if config.USE_FIXED_SEED else "Random Mode"
+    print(f"Initializing simulation environment... ({mode_msg})")
     env = SwarmEnv()
-    vis = Visualizer()  
+    vis = Visualizer(env)  
 
     step_count = 0
 
@@ -19,7 +21,7 @@ def main():
 
         # 3. check if the mission is successful
         if reached_goal:
-            print(f"✅ Mission Accomplished! total cost: {step_count} frames。")
+            print(f"✅ Mission Accomplished! total cost: {step_count} frames.")
             break
             
         step_count += 1
@@ -29,8 +31,16 @@ def main():
 
     # Export the recorded simulation data
     print("Exporting simulation data...")
-    env.export_data("simulation_data.csv")
-    print("✅ Data successfully saved to simulation_data.csv")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    env.save_data_to_parquet(timestamp)
+    
+    if config.SAVE_TRAJECTORY_PNG:
+        vis.save_trajectory(env, timestamp)
+    if config.SAVE_ANIMATION_GIF:
+        print("Saving animation gif, this may take a while...")
+        vis.save_animation(env, timestamp)
+        
+    print("✅ Data successfully saved.")
 
     vis.close()
 
