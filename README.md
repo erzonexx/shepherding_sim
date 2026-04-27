@@ -32,6 +32,12 @@ This project is a multi-agent-based simulation environment developed to support 
   - **距離減衰する反発力 (Distance-Decaying Repulsion)**: 犬から羊への反発力は距離に反比例し、より現実的な回避行動をモデル化します。
   - The repulsion force exerted by the dog on the sheep is inversely proportional to the distance, creating a more realistic avoidance behavior.
 
+- **異常状態の敵対的テスト (Abnormal Status Adversarial Testing)**
+  - 危険判定アルゴリズムのストレステスト用に、2種類の異常個体を生成できます：
+  - Supports generating two types of abnormal agents for stress-testing:
+    - **Type A (無反応 / Unresponsive)**: 牧羊犬からの反発力と群れの凝集力を完全に無視します。 / Completely ignores dog repulsion and flock cohesion.
+    - **Type B (分散 / Dispersing)**: 凝集力が極端に低く、他個体への分離力が異常に高いため、群れの境界をさまよいます。 / Exhibits extremely low cohesion and highly amplified separation force, wandering at the edges.
+
 - **高性能データロギング (High-Performance Data Logging)**
   - 各フレームのエージェント状態（位置、ID）を、大規模データ分析に適した **Apache Parquet** 形式で記録します。
   - Agent states for each frame are recorded in the efficient Apache Parquet format, ideal for large-scale data analysis.
@@ -74,6 +80,8 @@ The simulation behavior can be tuned in `config.py`.
 | `DOG_SENSING_RANGE` | 50.0 | 羊が犬を感知して逃げ始める半径距離。<br>Radius within which sheep react to the dog. |
 | `COHESION_THRESHOLD` | 25.0 | 犬が「Drive」から「Collect」に移行する羊の散らばりしきい値。<br>Max distance to COM that triggers "Collect" mode. |
 | `MAX_LOG_FILES` | 30 | 保持するログファイルの最大数（同期ローテーション）。<br>Maximum number of synchronized log files to keep. |
+| `NUM_ABNORMAL_A` | 2 | Type A（無反応 / Unresponsive）の異常羊の数。環境を切り替えるにはこれを変更します。<br>Number of Type A abnormal sheep. Modify this to toggle environments. |
+| `NUM_ABNORMAL_B` | 2 | Type B（分散 / Dispersing）の異常羊の数。環境を切り替えるにはこれを変更します。<br>Number of Type B abnormal sheep. Modify this to toggle environments. |
 
 ---
 
@@ -108,7 +116,8 @@ In this repository, the generated simulation data and visual files (`.parquet`, 
 
 ---
 
-## 📊 データ仕様 (Data Schema) - [足立さんへ / For Adachi-san]
+## � データ仕様 (Data Schema) - [足立さんへ / For Adachi-san]
+## �📊 データ仕様 (Data Schema) - [足立さんへ / For Adachi-san]
 
 足立さんの「危険判定アルゴリズム (Danger Judgment Algorithm)」開発用データスキーマです。
 シミュレーション結果は `logs/data/data_YYYYMMDD_HHMMSS.parquet` として出力されます。
@@ -124,6 +133,7 @@ This section details the Parquet data schema for Adachi-san's downstream "Danger
 | **Agent_ID** | `int` | エージェント固有のID (Dog=0, Sheep=0~19) | `5` |
 | **X** | `float` | X座標 (小数点2桁丸め) | `120.45` |
 | **Y** | `float` | Y座標 (小数点2桁丸め) | `85.32` |
+| **Status** | `str` | エージェントの真の状態・異常ラベル (`Normal`, `A`, `B`, `Dog`)。<br>True identity/status of the agent. | `'A'` |
 
 ### 💻 Pandas 読み込みサンプル (Python Read Example)
 以下は、エクスポートされた Parquet ファイルを読み込み、特定の羊の軌跡や犬の動きを抽出するサンプルコードです。

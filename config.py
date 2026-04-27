@@ -2,7 +2,7 @@ import numpy as np
 
 # 0. simulation settings
 MAX_STEPS = 2000
-USE_FIXED_SEED = True  
+USE_FIXED_SEED = False  
 MAX_LOG_FILES = 30           # Maximum number of log files to keep
 SAVE_TRAJECTORY_PNG = True
 SAVE_ANIMATION_GIF = False
@@ -37,3 +37,9 @@ COHESION_THRESHOLD = 25.0    # threshold of max distance to COM to trigger colle
 BOUNDARY_MARGIN = 5.0        # distance from the wall to start repelling
 DOG_SENSING_RANGE = 50.0     # radius within which sheep react to the dog
 EPSILON = 1e-6               # small number to avoid division by zero
+
+# 6. abnormal sheep settings
+NUM_ABNORMAL_A = 2           # number of abnormal sheep A (ignores dog)
+NUM_ABNORMAL_B = 2           # number of abnormal sheep B (low cohesion)
+WEIGHT_DOG_REPULSION_A = 0.0 # type A completely ignores dog repulsion
+WEIGHT_COHESION_B = 0.01     # type B has very low cohesion

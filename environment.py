@@ -17,6 +17,15 @@ class SwarmEnv:
         self.sheep_pos = self.sheep_start_center + np.random.randn(config.NUM_SHEEP, 2) * config.SHEEP_START_RADIUS
         self.sheep_vel = np.zeros((config.NUM_SHEEP, 2))
         
+        # assign abnormal status to sheep
+        self.sheep_status = np.array(['Normal'] * config.NUM_SHEEP, dtype=object)
+        indices = np.arange(config.NUM_SHEEP)
+        np.random.shuffle(indices) # randomly pick sheep to be abnormal
+        idx_A = indices[:config.NUM_ABNORMAL_A]
+        idx_B = indices[config.NUM_ABNORMAL_A : config.NUM_ABNORMAL_A + config.NUM_ABNORMAL_B]
+        self.sheep_status[idx_A] = 'A'
+        self.sheep_status[idx_B] = 'B'
+
         # initialize the shepherd
         self.dog_pos = np.copy(self.dog_start_pos)
         self.dog_vel = np.zeros(2)
@@ -27,10 +36,10 @@ class SwarmEnv:
 
     def _record_state(self):
         # Record Dog's state
-        self.history_data.append([self.current_frame, 'Dog', 0, round(float(self.dog_pos[0]), 2), round(float(self.dog_pos[1]), 2)])
+        self.history_data.append([self.current_frame, 'Dog', 0, round(float(self.dog_pos[0]), 2), round(float(self.dog_pos[1]), 2), 'Dog'])
         # Record each Sheep's state
         for i, pos in enumerate(self.sheep_pos):
-            self.history_data.append([self.current_frame, 'Sheep', i, round(float(pos[0]), 2), round(float(pos[1]), 2)])
+            self.history_data.append([self.current_frame, 'Sheep', i, round(float(pos[0]), 2), round(float(pos[1]), 2), self.sheep_status[i]])
 
     def save_data_to_parquet(self, timestamp):
         if not os.path.exists(config.DATA_LOG_DIR):
@@ -38,7 +47,7 @@ class SwarmEnv:
             
         export_path = os.path.join(config.DATA_LOG_DIR, f"data_{timestamp}.parquet")
         
-        df = pd.DataFrame(self.history_data, columns=['Frame', 'Agent_Type', 'Agent_ID', 'X', 'Y'])
+        df = pd.DataFrame(self.history_data, columns=['Frame', 'Agent_Type', 'Agent_ID', 'X', 'Y', 'Status'])
         df.to_parquet(export_path, engine='pyarrow')
         
         parquet_files = [os.path.join(config.DATA_LOG_DIR, f) for f in os.listdir(config.DATA_LOG_DIR) if f.endswith('.parquet')]
@@ -96,15 +105,21 @@ class SwarmEnv:
         self.dog_pos += self.dog_vel
         self.dog_pos = np.clip(self.dog_pos, 0, config.SPACE_SIZE)
 
+        # --- dynamic weights based on sheep status ---
+        cohesion_weights = np.where(self.sheep_status == 'A', 0.0, 
+                                    np.where(self.sheep_status == 'B', config.WEIGHT_COHESION * 0.15, config.WEIGHT_COHESION))[:, np.newaxis]
+        dog_repulsion_weights = np.where(self.sheep_status == 'A', config.WEIGHT_DOG_REPULSION_A, config.WEIGHT_DOG_REPULSION)[:, np.newaxis]
+        separation_weights = np.where(self.sheep_status == 'B', config.WEIGHT_SEPARATION * 3.0, config.WEIGHT_SEPARATION)[:, np.newaxis]
+
         # --- sheep logic ---
         # A. cohesion (converge to the center of mass)
-        cohesion = (com - self.sheep_pos) * config.WEIGHT_COHESION
+        cohesion = (com - self.sheep_pos) * cohesion_weights
         
         # B. avoid the shepherd (strength is inversely proportional to distance d)
         vec_from_dog = self.sheep_pos - self.dog_pos
         dist_from_dog = np.linalg.norm(vec_from_dog, axis=1, keepdims=True)
         dir_from_dog = vec_from_dog / (dist_from_dog + 1e-6)
-        dog_repulsion = dir_from_dog * (config.WEIGHT_DOG_REPULSION / (dist_from_dog + 1e-6))
+        dog_repulsion = dir_from_dog * (dog_repulsion_weights / (dist_from_dog + 1e-6))
         
         # only react to the dog if it is within sensing range
         dog_repulsion[dist_from_dog[:, 0] > config.DOG_SENSING_RANGE] = 0
@@ -117,13 +132,19 @@ class SwarmEnv:
         # D. separation (prevent sheep from overlapping)
         diffs = self.sheep_pos[:, np.newaxis, :] - self.sheep_pos[np.newaxis, :, :]
         dists = np.linalg.norm(diffs, axis=2)
-        mask = (dists > 0) & (dists < 3.0)  # only react to sheep closer than 3.0 units
+        separation_radius = np.where(self.sheep_status == 'B', 6.0, 3.0)[:, np.newaxis]
+        mask = (dists > 0) & (dists < separation_radius)  # dynamic sensing radius
         repulsion_forces = diffs / (dists[..., np.newaxis]**2 + 1e-6)
         repulsion_forces[~mask] = 0
-        separation = np.sum(repulsion_forces, axis=1) * config.WEIGHT_SEPARATION
+        separation = np.sum(repulsion_forces, axis=1) * separation_weights
 
         # combine the forces and update the velocity and position
-        self.sheep_vel += cohesion + dog_repulsion + boundary_force + separation
+        total_force = cohesion + dog_repulsion + boundary_force + separation
+        
+        # apply inertia (sluggish turning) for Type A sheep
+        inertia_multiplier = np.where(self.sheep_status == 'A', 0.2, 1.0)[:, np.newaxis]
+        self.sheep_vel += total_force * inertia_multiplier
+        
         self.sheep_vel = self._limit_speed_array(self.sheep_vel, config.SHEEP_MAX_SPEED)
         self.sheep_pos += self.sheep_vel
 
