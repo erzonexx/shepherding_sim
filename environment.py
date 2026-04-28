@@ -161,3 +161,12 @@ class SwarmEnv:
         speeds_with_epsilon = speeds + config.EPSILON
         scale = np.minimum(1.0, max_speed / speeds_with_epsilon)
         return vels * scale
+
+    def repair_sheep(self, indices):
+        """
+        Intervention API to repair abnormal sheep back to the 'Normal' state.
+        :param indices: A single integer, a list of integers, or a NumPy array of sheep indices.
+        """
+        if isinstance(indices, int):
+            indices = [indices]
+        self.sheep_status[indices] = 'Normal'

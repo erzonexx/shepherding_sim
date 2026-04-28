@@ -116,15 +116,14 @@ In this repository, the generated simulation data and visual files (`.parquet`, 
 
 ---
 
-## � データ仕様 (Data Schema) - [足立さんへ / For Adachi-san]
-## �📊 データ仕様 (Data Schema) - [足立さんへ / For Adachi-san]
+##  データ仕様 (Data Schema) - [学生2へ / For Student 2]
 
-足立さんの「危険判定アルゴリズム (Danger Judgment Algorithm)」開発用データスキーマです。
+学生2の「危険判定アルゴリズム (Danger Judgment Algorithm)」開発用データスキーマです。
 シミュレーション結果は `logs/data/data_YYYYMMDD_HHMMSS.parquet` として出力されます。
 
-This section details the Parquet data schema for Adachi-san's downstream "Danger Judgment Algorithm" development.
+This section details the Parquet data schema for Student 2's downstream "Danger Judgment Algorithm" development.
 
-### 📝 Schema Definition
+###  Schema Definition
 
 | Column | Type | Description | Example |
 | :--- | :--- | :--- | :--- |
@@ -135,7 +134,7 @@ This section details the Parquet data schema for Adachi-san's downstream "Danger
 | **Y** | `float` | Y座標 (小数点2桁丸め) | `85.32` |
 | **Status** | `str` | エージェントの真の状態・異常ラベル (`Normal`, `A`, `B`, `Dog`)。<br>True identity/status of the agent. | `'A'` |
 
-### 💻 Pandas 読み込みサンプル (Python Read Example)
+###  Pandas 読み込みサンプル (Python Read Example)
 以下は、エクスポートされた Parquet ファイルを読み込み、特定の羊の軌跡や犬の動きを抽出するサンプルコードです。
 
 ```python
@@ -159,3 +158,45 @@ print("\nCenter of Mass per Frame:\n", com_per_frame.head())
 
 アルゴリズムの開発、応援しております！何か不明点があればお気軽にお知らせください。
 Good luck with the algorithm development!
+
+---
+
+## 🤝 開発者連携ガイド (Developer Integration Guide)
+
+本プロジェクトのダウンストリーム開発を担当する学生2と学生3のための統合ガイドです。
+This is the integration guide for Student 2 and Student 3 handling the downstream development.
+
+###  学生2へ: 危険判定 (Anomaly Detection) 開発ガイド
+
+- **データ取得とアノテーション (Data Acquisition & Ground Truth)**:
+  エクスポートされる `.parquet` ログファイルには、すでに `Status` 列 (`'Normal'`, `'A'`, `'B'`) が含まれています。アルゴリズムの学習および評価フェーズにおいて、この列を**正解ラベル (Ground Truth)** として利用し、検出アルゴリズムの精度を検証してください。
+  *The exported `.parquet` log files already contain the `Status` column. Use this column as the Ground Truth during the training and evaluation phases of your algorithm.*
+- **環境コントロール (Environment Control)**:
+  開発・テストフェーズにおいて、異なる異常個体比率のデータセットを生成したい場合は、`config.py` 内の `NUM_ABNORMAL_A` および `NUM_ABNORMAL_B` の数値を変更してシミュレーションを実行してください。
+  *To generate datasets with different anomaly ratios, modify `NUM_ABNORMAL_A` and `NUM_ABNORMAL_B` in `config.py`.*
+
+###  学生3へ: 修復モード (Repair Mode) 接入ガイド
+
+- **API 詳細 (API Details)**:
+  `environment.py` 内の `SwarmEnv` クラスには、介入用 API として `repair_sheep(indices)` が実装されています。このメソッドは非常に柔軟に設計されており、対象となる羊の単一の整数 ID、ID のリスト、または NumPy 配列のいずれの形式でも引数として受け付けることができます。
+  *The `repair_sheep(indices)` API is extremely flexible and accepts a single integer ID, a list of IDs, or a NumPy array.*
+
+- **メインループ統合サンプル (Integration Example)**:
+  将来的に、お二人のアルゴリズムを `main.py` のシミュレーションループに統合する際の擬似コード（Pseudo-code）は以下のようになります。
+
+  ```python
+  while step_count < config.MAX_STEPS:
+      reached_goal = env.step()
+      
+      # --- [Student 2] Anomaly Detection ---
+      # 現在の物理状態 (env.sheep_pos, env.sheep_vel) から異常個体のIDを予測
+      predicted_abnormal_ids = student2_detect_anomaly(env.sheep_pos, env.sheep_vel)
+      
+      # --- [Student 3] Repair Intervention ---
+      # 検出されたIDをAPIに渡し、対象の羊を物理的に「正常」状態へ強制修復
+      if len(predicted_abnormal_ids) > 0:
+          env.repair_sheep(predicted_abnormal_ids)
+          
+      vis.render(env)
+      # ...
+  ```
