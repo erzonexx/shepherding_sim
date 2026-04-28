@@ -19,7 +19,7 @@ class Visualizer:
         self.ax.set_title("Swarm Shepherding Simulation")
 
         # draw the goal area (sheepfold)
-        goal_circle = patches.Circle((env.goal_pos[0], env.goal_pos[1]), radius=20, color='lightgreen', alpha=0.3)
+        goal_circle = patches.Circle((env.goal_pos[0], env.goal_pos[1]), radius=config.GOAL_RADIUS, color='lightgreen', alpha=0.3)
         self.ax.add_patch(goal_circle)
         # draw the goal center (golden star)
         self.ax.plot(env.goal_pos[0], env.goal_pos[1], 'y*', markersize=18, label='Goal')
@@ -63,7 +63,7 @@ class Visualizer:
         ax.set_title("Shepherding Trajectory")
 
         # draw the goal area
-        goal_circle = patches.Circle((env.goal_pos[0], env.goal_pos[1]), radius=20, color='lightgreen', alpha=0.3)
+        goal_circle = patches.Circle((env.goal_pos[0], env.goal_pos[1]), radius=config.GOAL_RADIUS, color='lightgreen', alpha=0.3)
         ax.add_patch(goal_circle)
         ax.plot(env.goal_pos[0], env.goal_pos[1], 'y*', markersize=18, label='Goal')
 
@@ -107,7 +107,7 @@ class Visualizer:
         ax.set_ylim(0, config.SPACE_SIZE)
         ax.set_title("Shepherding Animation")
 
-        goal_circle = patches.Circle((env.goal_pos[0], env.goal_pos[1]), radius=20, color='lightgreen', alpha=0.3)
+        goal_circle = patches.Circle((env.goal_pos[0], env.goal_pos[1]), radius=config.GOAL_RADIUS, color='lightgreen', alpha=0.3)
         ax.add_patch(goal_circle)
         ax.plot(env.goal_pos[0], env.goal_pos[1], 'y*', markersize=18, label='Goal')
 

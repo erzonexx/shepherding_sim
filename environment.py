@@ -80,7 +80,7 @@ class SwarmEnv:
         
         # success judgment: all sheep must be within distance 20 to the goal
         distances_to_goal = np.linalg.norm(self.sheep_pos - self.goal_pos, axis=1)
-        if np.all(distances_to_goal < 20):
+        if np.all(distances_to_goal < config.GOAL_RADIUS):
             return True
 
         # calculate distances of all sheep to the center of mass (COM)
@@ -107,9 +107,9 @@ class SwarmEnv:
 
         # --- dynamic weights based on sheep status ---
         cohesion_weights = np.where(self.sheep_status == 'A', 0.0, 
-                                    np.where(self.sheep_status == 'B', config.WEIGHT_COHESION * 0.15, config.WEIGHT_COHESION))[:, np.newaxis]
+                                    np.where(self.sheep_status == 'B', config.WEIGHT_COHESION * config.WEIGHT_COHESION_B_FACTOR, config.WEIGHT_COHESION))[:, np.newaxis]
         dog_repulsion_weights = np.where(self.sheep_status == 'A', config.WEIGHT_DOG_REPULSION_A, config.WEIGHT_DOG_REPULSION)[:, np.newaxis]
-        separation_weights = np.where(self.sheep_status == 'B', config.WEIGHT_SEPARATION * 3.0, config.WEIGHT_SEPARATION)[:, np.newaxis]
+        separation_weights = np.where(self.sheep_status == 'B', config.WEIGHT_SEPARATION * config.WEIGHT_SEPARATION_B_FACTOR, config.WEIGHT_SEPARATION)[:, np.newaxis]
 
         # --- sheep logic ---
         # A. cohesion (converge to the center of mass)
@@ -126,14 +126,14 @@ class SwarmEnv:
         
         # C. boundary repulsion force (prevent the sheep from sticking to the wall)
         boundary_force = np.zeros_like(self.sheep_pos)
-        boundary_force[self.sheep_pos < 5] += config.WEIGHT_BOUNDARY
-        boundary_force[self.sheep_pos > config.SPACE_SIZE - 5] -= config.WEIGHT_BOUNDARY
+        boundary_force[self.sheep_pos < config.BOUNDARY_MARGIN] += config.WEIGHT_BOUNDARY
+        boundary_force[self.sheep_pos > config.SPACE_SIZE - config.BOUNDARY_MARGIN] -= config.WEIGHT_BOUNDARY
 
         # D. separation (prevent sheep from overlapping)
         diffs = self.sheep_pos[:, np.newaxis, :] - self.sheep_pos[np.newaxis, :, :]
         dists = np.linalg.norm(diffs, axis=2)
-        separation_radius = np.where(self.sheep_status == 'B', 6.0, 3.0)[:, np.newaxis]
-        mask = (dists > 0) & (dists < separation_radius)  # dynamic sensing radius
+        separation_radius = np.where(self.sheep_status == 'B', config.SEPARATION_RADIUS_B, config.SEPARATION_RADIUS_NORMAL)[:, np.newaxis]
+        mask = (dists > 0) & (dists < separation_radius)
         repulsion_forces = diffs / (dists[..., np.newaxis]**2 + 1e-6)
         repulsion_forces[~mask] = 0
         separation = np.sum(repulsion_forces, axis=1) * separation_weights
@@ -142,7 +142,7 @@ class SwarmEnv:
         total_force = cohesion + dog_repulsion + boundary_force + separation
         
         # apply inertia (sluggish turning) for Type A sheep
-        inertia_multiplier = np.where(self.sheep_status == 'A', 0.2, 1.0)[:, np.newaxis]
+        inertia_multiplier = np.where(self.sheep_status == 'A', config.INERTIA_FACTOR_A, 1.0)[:, np.newaxis]
         self.sheep_vel += total_force * inertia_multiplier
         
         self.sheep_vel = self._limit_speed_array(self.sheep_vel, config.SHEEP_MAX_SPEED)

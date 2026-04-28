@@ -35,7 +35,7 @@ This project is a multi-agent-based simulation environment developed to support 
 - **異常状態の敵対的テスト (Abnormal Status Adversarial Testing)**
   - 危険判定アルゴリズムのストレステスト用に、2種類の異常個体を生成できます：
   - Supports generating two types of abnormal agents for stress-testing:
-    - **Type A (無反応 / Unresponsive)**: 牧羊犬からの反発力と群れの凝集力を完全に無視します。 / Completely ignores dog repulsion and flock cohesion.
+    - **Type A (無反応 / Unresponsive)**: 牧羊犬からの反発力と群れの凝集力を無視し、さらに物理的な慣性が大きく、動きが鈍い。 / Ignores dog repulsion and flock cohesion, and exhibits high physical inertia, making it sluggish.
     - **Type B (分散 / Dispersing)**: 凝集力が極端に低く、他個体への分離力が異常に高いため、群れの境界をさまよいます。 / Exhibits extremely low cohesion and highly amplified separation force, wandering at the edges.
 
 - **高性能データロギング (High-Performance Data Logging)**
@@ -53,6 +53,7 @@ This project is a multi-agent-based simulation environment developed to support 
 ---
 
 ## ディレクトリ構成 (Directory Structure)
+
 ```text
 shepherding_sim/
 ├── main.py              # シミュレーション実行のメインスクリプト (Main simulation entry point)
@@ -67,21 +68,27 @@ shepherding_sim/
 ---
 
 ## ⚙️ パラメータ設定 (Configuration)
+
 シミュレーションの挙動は `config.py` で調整可能です。
 The simulation behavior can be tuned in `config.py`.
 
 | Parameter (変数) | Value | Description (説明) |
 | :--- | :---: | :--- |
-| `SHEEP_MAX_SPEED` | 0.7 | 羊の最大速度。質量感（重み）を持たせるために低めに設定。<br>Max speed of sheep. Kept low to simulate mass. |
-| `DOG_MAX_SPEED` | 1.5 | 犬の最大速度。羊を回り込むための十分な機動力。<br>Max speed of dog. Faster than sheep for maneuvering. |
-| `WEIGHT_COHESION` | 0.01 | 羊が群れ（中心）へまとまろうとする力。<br>Flock's desire to converge to the center. |
-| `WEIGHT_SEPARATION` | 2.0 | 羊同士の重なりを防ぐ反発力（距離3.0以内で作動）。<br>Force preventing sheep from overlapping (activates < 3.0). |
+| `SHEEP_MAX_SPEED` | 0.7 | 羊の最大速度。質量感を持たせるために低めに設定。<br>Max speed of sheep. Kept low to simulate mass. |
+| `DOG_MAX_SPEED` | 1.5 | 犬の最大速度。羊を回り込むための十分な機動力。<br>Max speed of dog. Must be faster than sheep. |
+| `WEIGHT_COHESION` | 0.01 | 羊が群れ（中心）へまとまろうとする力の基本強度。<br>Base strength of the flock's desire to converge. |
+| `WEIGHT_SEPARATION` | 2.0 | 羊同士の重なりを防ぐ反発力の基本強度。<br>Base strength of repulsion force to prevent sheep overlapping. |
 | `WEIGHT_DOG_REPULSION` | 10.0 | 犬への恐怖（犬から逃げる強さ）。距離に反比例。<br>Fear of the dog. Inversely proportional to distance. |
-| `DOG_SENSING_RANGE` | 50.0 | 羊が犬を感知して逃げ始める半径距離。<br>Radius within which sheep react to the dog. |
-| `COHESION_THRESHOLD` | 25.0 | 犬が「Drive」から「Collect」に移行する羊の散らばりしきい値。<br>Max distance to COM that triggers "Collect" mode. |
-| `MAX_LOG_FILES` | 30 | 保持するログファイルの最大数（同期ローテーション）。<br>Maximum number of synchronized log files to keep. |
-| `NUM_ABNORMAL_A` | 2 | Type A（無反応 / Unresponsive）の異常羊の数。環境を切り替えるにはこれを変更します。<br>Number of Type A abnormal sheep. Modify this to toggle environments. |
-| `NUM_ABNORMAL_B` | 2 | Type B（分散 / Dispersing）の異常羊の数。環境を切り替えるにはこれを変更します。<br>Number of Type B abnormal sheep. Modify this to toggle environments. |
+| `SEPARATION_RADIUS_NORMAL` | 3.0 | 通常の羊が他個体を避け始める距離。<br>Separation sensing radius for normal sheep. |
+| `DOG_SENSING_RANGE` | 50.0 | 羊が犬を感知して逃げ始める半径距離。<br>Radius within which sheep start reacting to the dog. |
+| `COHESION_THRESHOLD` | 25.0 | 犬が「Drive」から「Collect」に移行する羊の散らばりしきい値。<br>Max flock dispersion that triggers "Collect" mode. |
+| `GOAL_RADIUS` | 20.0 | 全ての羊がこの半径内に入ると成功と判定される。<br>Radius around the goal center to consider the mission accomplished. |
+| `NUM_ABNORMAL_A` | 2 | Type A（無反応）の異常羊の数。<br>Number of Type A (Unresponsive) sheep. |
+| `NUM_ABNORMAL_B` | 2 | Type B（分散）の異常羊の数。<br>Number of Type B (Dispersing) sheep. |
+| `INERTIA_FACTOR_A` | 0.2 | Type A の慣性係数（値が低いほど動きが鈍い）。<br>Inertia factor for Type A sheep (lower is more sluggish). |
+| `WEIGHT_COHESION_B_FACTOR` | 0.15 | Type B の凝集力係数（通常羊との比較）。<br>Cohesion force factor for Type B sheep (vs normal). |
+| `WEIGHT_SEPARATION_B_FACTOR`| 3.0 | Type B の分離力係数（通常羊との比較）。<br>Separation force factor for Type B sheep (vs normal). |
+| `SEPARATION_RADIUS_B` | 6.0 | Type B の分離力感知半径（通常より広い）。<br>Separation sensing radius for Type B sheep (larger). |
 
 ---
 

@@ -30,16 +30,20 @@ WEIGHT_DOG_REPULSION = 10.0  # the sheep's fear of the dog
 WEIGHT_SEPARATION = 2.0      # prevent sheep from overlapping
 WEIGHT_BOUNDARY = 1.0        # the boundary's repulsion force
 
-# 5. model constants
-GOAL_RADIUS = 10.0           # radius to consider the goal as reached
-DOG_DRIVE_DISTANCE = 25.0    # distance behind the flock the dog aims for
-COHESION_THRESHOLD = 25.0    # threshold of max distance to COM to trigger collect mode
-BOUNDARY_MARGIN = 5.0        # distance from the wall to start repelling
-DOG_SENSING_RANGE = 50.0     # radius within which sheep react to the dog
-EPSILON = 1e-6               # small number to avoid division by zero
+# 5. Boids model constants
+SEPARATION_RADIUS_NORMAL = 3.0 # normal sheep's separation sensing radius
+GOAL_RADIUS = 20.0             # radius to consider the goal as reached
+DOG_DRIVE_DISTANCE = 25.0      # distance behind the flock the dog aims for
+COHESION_THRESHOLD = 25.0      # threshold of max distance to COM to trigger collect mode
+BOUNDARY_MARGIN = 5.0          # distance from the wall to start repelling
+DOG_SENSING_RANGE = 50.0       # radius within which sheep react to the dog
+EPSILON = 1e-6                 # small number to avoid division by zero
 
 # 6. abnormal sheep settings
-NUM_ABNORMAL_A = 2           # number of abnormal sheep A (ignores dog)
-NUM_ABNORMAL_B = 2           # number of abnormal sheep B (low cohesion)
-WEIGHT_DOG_REPULSION_A = 0.0 # type A completely ignores dog repulsion
-WEIGHT_COHESION_B = 0.01     # type B has very low cohesion
+NUM_ABNORMAL_A = 2             # number of abnormal sheep A (Unresponsive)
+NUM_ABNORMAL_B = 2             # number of abnormal sheep B (Dispersing)
+WEIGHT_DOG_REPULSION_A = 0.0   # type A completely ignores dog repulsion
+INERTIA_FACTOR_A = 0.2         # type A's sluggishness (lower is more sluggish)
+WEIGHT_COHESION_B_FACTOR = 0.15  # type B cohesion force factor (vs normal)
+WEIGHT_SEPARATION_B_FACTOR = 3.0 # type B separation force factor (vs normal)
+SEPARATION_RADIUS_B = 6.0      # type B's separation sensing radius (larger)
