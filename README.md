@@ -43,11 +43,11 @@ This project is a multi-agent-based simulation environment developed to support 
   - Agent states for each frame are recorded in the efficient Apache Parquet format, ideal for large-scale data analysis.
 
 - **データと同期した可視化出力 (Synchronized Visual & Data Outputs)**
-  - シミュレーション完了時、データファイルとタイムスタンプが一致する静的な軌跡プロット（PNG）とアニメーション（GIF）を生成します。
-  - At the end of each simulation, a static trajectory plot (PNG) and an animated GIF are generated with timestamps that match the corresponding data file.
+  - シミュレーション完了時、データファイルとタイムスタンプが一致する静的な軌跡プロット（PNG）とアニメーション（MP4）を生成します。
+  - At the end of each simulation, a static trajectory plot (PNG) and an animated MP4 video are generated with timestamps that match the corresponding data file.
 
 - **ログの自動ローテーション (Automated Log Rotation)**
-  - ログファイル数 (`MAX_LOG_FILES`) を一定に保ち、最も古いデータセット（Parquet, PNG, GIF）を自動的に削除してディスクスペースを管理します。
+  - ログファイル数 (`MAX_LOG_FILES`) を一定に保ち、最も古いデータセット（Parquet, PNG, MP4）を自動的に削除してディスクスペースを管理します。
   - A built-in cleanup mechanism maintains a fixed number of recent logs and automatically deletes the oldest data sets to manage disk space.
 
 ---
@@ -59,10 +59,11 @@ shepherding_sim/
 ├── main.py              # シミュレーション実行のメインスクリプト (Main simulation entry point)
 ├── environment.py       # 中核となるシミュレーション環境、物理演算、エージェントロジック (Core simulation environment, physics, and agent logic)
 ├── config.py            # 全ての調整可能なパラメータとシミュレーション設定 (All tunable parameters and simulation settings)
-├── visualizer.py        # リアルタイム描画と可視化出力（PNG/GIF）の生成 (Real-time rendering and visual output generation)
+├── visualizer.py        # リアルタイム描画と可視化出力（PNG/MP4）の生成 (Real-time rendering and visual output generation)
 └── logs/                # 全ての出力ファイルが保存される自動生成ディレクトリ (Auto-generated directory for all outputs)
     ├── data/            # シミュレーションデータを *.parquet 形式で格納 (Stores simulation data in *.parquet format)
-    └── visuals/         # 軌跡画像 trajectory_*.png とアニメーション animation_*.gif を格納 (Stores trajectory and animation files)
+    ├── videos/          # アニメーション animation_*.mp4 を格納 (Stores animation video files)
+    └── visuals/         # 軌跡画像 trajectory_*.png を格納 (Stores trajectory files)
 ```
 
 ---

@@ -36,9 +36,9 @@ def main():
     
     if config.SAVE_TRAJECTORY_PNG:
         vis.save_trajectory(env, timestamp)
-    if config.SAVE_ANIMATION_GIF:
-        print("Saving animation gif, this may take a while...")
-        vis.save_animation(env, timestamp)
+    if config.SAVE_ANIMATION_MP4:
+        print("Saving animation mp4, this may take a while...")
+        vis.save_animation_mp4(env, timestamp)
         
     print("✅ Data successfully saved.")
 

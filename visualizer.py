@@ -96,16 +96,27 @@ class Visualizer:
         fig.savefig(export_path)
         plt.close(fig)
 
-    def save_animation(self, env, timestamp):
-        if not os.path.exists(config.VISUAL_LOG_DIR):
-            os.makedirs(config.VISUAL_LOG_DIR)
+    def save_animation_mp4(self, env, timestamp):
+        if not os.path.exists(config.VIDEO_LOG_DIR):
+            os.makedirs(config.VIDEO_LOG_DIR)
             
+        # Capacity control: clean up old videos before saving a new one
+        try:
+            mp4_files = [os.path.join(config.VIDEO_LOG_DIR, f) for f in os.listdir(config.VIDEO_LOG_DIR) if f.endswith('.mp4')]
+            if len(mp4_files) >= config.MAX_LOG_FILES:
+                mp4_files.sort(key=os.path.getmtime)
+                num_to_delete = len(mp4_files) - config.MAX_LOG_FILES + 1
+                for f in mp4_files[:num_to_delete]:
+                    os.remove(f)
+        except OSError as e:
+            print(f"Warning: Could not perform video log rotation: {e}")
+
         df = pd.DataFrame(env.history_data, columns=['Frame', 'Agent_Type', 'Agent_ID', 'X', 'Y', 'Status'])
         
         fig, ax = plt.subplots(figsize=(7, 7))
         ax.set_xlim(0, config.SPACE_SIZE)
         ax.set_ylim(0, config.SPACE_SIZE)
-        ax.set_title("Shepherding Animation")
+        ax.set_title("Shepherding Animation (MP4)")
 
         goal_circle = patches.Circle((env.goal_pos[0], env.goal_pos[1]), radius=config.GOAL_RADIUS, color='lightgreen', alpha=0.3)
         ax.add_patch(goal_circle)
@@ -122,6 +133,9 @@ class Visualizer:
         ]
         ax.legend(handles=legend_elements, loc='upper right')
 
+        # Initialize frame text watermark at the top-left corner
+        frame_text = ax.text(0.02, 0.98, '', transform=ax.transAxes, verticalalignment='top', fontsize=10, fontweight='bold', color='black')
+
         frames = sorted(df['Frame'].unique())
 
         def update(frame):
@@ -132,9 +146,31 @@ class Visualizer:
             statuses = sheep_data['Status'].values
             scat_sheep.set_facecolors(np.vectorize(COLOR_MAP.get)(statuses))
             scat_dog.set_offsets(dog_data[['X', 'Y']].values)
-            return scat_sheep, scat_dog
+
+            # Recalculate metrics for watermark
+            sheep_pos = sheep_data[['X', 'Y']].values
+            if sheep_pos.shape[0] > 0:
+                com = np.mean(sheep_pos, axis=0)
+                dist_to_goal = np.linalg.norm(env.goal_pos - com)
+                flock_dispersion = np.max(np.linalg.norm(sheep_pos - com, axis=1))
+                watermark_text = (
+                    f"Frame: {frame}\n"
+                    f"Dist to Goal: {dist_to_goal:.2f}\n"
+                    f"Flock Dispersion: {flock_dispersion:.2f}"
+                )
+            else:
+                watermark_text = f"Frame: {frame}"
+            frame_text.set_text(watermark_text)
+
+            return scat_sheep, scat_dog, frame_text
 
         ani = animation.FuncAnimation(fig, update, frames=frames, blit=True)
-        export_path = os.path.join(config.VISUAL_LOG_DIR, f"animation_{timestamp}.gif")
-        ani.save(export_path, writer='pillow', fps=30)
-        plt.close(fig)
+        export_path = os.path.join(config.VIDEO_LOG_DIR, f"animation_{timestamp}.mp4")
+        
+        try:
+            ani.save(export_path, writer='ffmpeg', fps=30)
+        except Exception as e:
+            print(f"\n[Error] Could not export MP4 video: {e}")
+            print("[Hint] Please ensure 'ffmpeg' is installed and added to your system PATH.")
+        finally:
+            plt.close(fig)

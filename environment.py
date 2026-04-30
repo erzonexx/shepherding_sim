@@ -60,9 +60,9 @@ class SwarmEnv:
                     basename = os.path.basename(f)
                     ts = basename.replace("data_", "").replace(".parquet", "")
                     png_path = os.path.join(config.VISUAL_LOG_DIR, f"trajectory_{ts}.png")
-                    gif_path = os.path.join(config.VISUAL_LOG_DIR, f"animation_{ts}.gif")
+                    mp4_path = os.path.join(config.VIDEO_LOG_DIR, f"animation_{ts}.mp4")
                     if os.path.exists(png_path): os.remove(png_path)
-                    if os.path.exists(gif_path): os.remove(gif_path)
+                    if os.path.exists(mp4_path): os.remove(mp4_path)
                 except OSError as e:
                     print(f"Warning: Could not remove old log file {f}: {e}")
 

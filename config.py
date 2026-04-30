@@ -5,9 +5,10 @@ MAX_STEPS = 2000
 USE_FIXED_SEED = False  
 MAX_LOG_FILES = 30           # Maximum number of log files to keep
 SAVE_TRAJECTORY_PNG = True
-SAVE_ANIMATION_GIF = False
+SAVE_ANIMATION_MP4 = True    # Enable MP4 video generation
 DATA_LOG_DIR = "logs/data"
 VISUAL_LOG_DIR = "logs/visuals"
+VIDEO_LOG_DIR = "logs/videos"
 
 # 1. space and goal settings
 SPACE_SIZE = 200.0
