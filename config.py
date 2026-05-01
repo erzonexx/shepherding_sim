@@ -7,6 +7,7 @@ MAX_LOG_FILES = 30           # Maximum number of log files to keep
 SAVE_TRAJECTORY_PNG = True
 SAVE_ANIMATION_MP4 = True    # Enable MP4 video generation
 DATA_LOG_DIR = "logs/data"
+ANALYSIS_LOG_DIR = "logs/analysis"
 VISUAL_LOG_DIR = "logs/visuals"
 VIDEO_LOG_DIR = "logs/videos"
 
@@ -41,10 +42,15 @@ DOG_SENSING_RANGE = 50.0       # radius within which sheep react to the dog
 EPSILON = 1e-6                 # small number to avoid division by zero
 
 # 6. abnormal sheep settings
-NUM_ABNORMAL_A = 2             # number of abnormal sheep A (Unresponsive)
-NUM_ABNORMAL_B = 2             # number of abnormal sheep B (Dispersing)
+NUM_ABNORMAL_A = 0             # number of abnormal sheep A (Unresponsive)
+NUM_ABNORMAL_B = 0             # number of abnormal sheep B (Dispersing)
 WEIGHT_DOG_REPULSION_A = 0.0   # type A completely ignores dog repulsion
 INERTIA_FACTOR_A = 0.2         # type A's sluggishness (lower is more sluggish)
 WEIGHT_COHESION_B_FACTOR = 0.15  # type B cohesion force factor (vs normal)
 WEIGHT_SEPARATION_B_FACTOR = 3.0 # type B separation force factor (vs normal)
 SEPARATION_RADIUS_B = 6.0      # type B's separation sensing radius (larger)
+
+# 7. danger detection settings
+DANGER_DISPERSION_THRESHOLD = 40.0 # dispersion radius > this value triggers an alarm
+DANGER_STAGNATION_FRAMES = 150     # number of consecutive frames to check for stagnation
+DANGER_STAGNATION_THRESHOLD = 1.0  # if progress is less than this over the frames, it's stagnation

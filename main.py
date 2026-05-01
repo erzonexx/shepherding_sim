@@ -1,12 +1,18 @@
 from environment import SwarmEnv
 from visualizer import Visualizer
+from detector import Detector
+from plot_analysis import plot_metrics_from_files
 import config
 from datetime import datetime
+import os
 
 def main():
     mode_msg = "Fixed Mode (Seed 42)" if config.USE_FIXED_SEED else "Random Mode"
     print(f"Initializing simulation environment... ({mode_msg})")
     env = SwarmEnv()
+    detector = Detector(dispersion_threshold=config.DANGER_DISPERSION_THRESHOLD,
+                          stagnation_frames=config.DANGER_STAGNATION_FRAMES,
+                          stagnation_threshold=config.DANGER_STAGNATION_THRESHOLD)
     vis = Visualizer(env)  
 
     step_count = 0
@@ -15,11 +21,19 @@ def main():
     while step_count < config.MAX_STEPS:
         # 1. physics environment simulation one frame
         reached_goal = env.step()
+
+        # 2. run the detector to analyze the flock's state and record metrics
+        metrics, report = detector.analyze_flock(env.sheep_pos, env.goal_pos)
+        env.record_frame_metrics(metrics)
+        if report['is_danger']:
+            # to avoid spamming too many warnings, we only print every 10 frames when in danger
+            if step_count % 10 == 0:
+                print(f"🚨 [Frame {step_count}] Danger Warning! Type: {report['danger_type']}. Desc: {report['description']}")
         
-        # 2. refresh the screen
+        # 3. refresh the screen
         vis.render(env)
 
-        # 3. check if the mission is successful
+        # 4. check if the mission is successful
         if reached_goal:
             print(f"✅ Mission Accomplished! total cost: {step_count} frames.")
             break
@@ -40,6 +54,10 @@ def main():
         print("Saving animation mp4, this may take a while...")
         vis.save_animation_mp4(env, timestamp)
         
+    print("Generating analysis charts...")
+    parquet_path = os.path.join(config.DATA_LOG_DIR, f"data_{timestamp}.parquet")
+    plot_metrics_from_files([parquet_path], config.ANALYSIS_LOG_DIR)
+
     print("✅ Data successfully saved.")
 
     vis.close()

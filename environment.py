@@ -33,6 +33,7 @@ class SwarmEnv:
         # variables for experimental data recording
         self.current_frame = 0
         self.history_data = []
+        self.metrics_data = []
 
     def _record_state(self):
         # Record Dog's state
@@ -41,14 +42,28 @@ class SwarmEnv:
         for i, pos in enumerate(self.sheep_pos):
             self.history_data.append([self.current_frame, 'Sheep', i, round(float(pos[0]), 2), round(float(pos[1]), 2), self.sheep_status[i]])
 
+    def record_frame_metrics(self, metrics):
+        """record the calculated metrics for the current frame. The input is a dictionary of metric_name: value."""
+        metrics_dict = metrics.copy()
+        metrics_dict['Frame'] = self.current_frame
+        self.metrics_data.append(metrics_dict)
+
     def save_data_to_parquet(self, timestamp):
         if not os.path.exists(config.DATA_LOG_DIR):
             os.makedirs(config.DATA_LOG_DIR)
             
         export_path = os.path.join(config.DATA_LOG_DIR, f"data_{timestamp}.parquet")
         
-        df = pd.DataFrame(self.history_data, columns=['Frame', 'Agent_Type', 'Agent_ID', 'X', 'Y', 'Status'])
-        df.to_parquet(export_path, engine='pyarrow')
+        df_agents = pd.DataFrame(self.history_data, columns=['Frame', 'Agent_Type', 'Agent_ID', 'X', 'Y', 'Status'])
+        df_metrics = pd.DataFrame(self.metrics_data)
+
+        # if metrics data is empty (e.g., if the detector never recorded any metrics), we should still save the agent data without merging
+        if not df_metrics.empty:
+            final_df = pd.merge(df_agents, df_metrics, on='Frame', how='left')
+        else:
+            final_df = df_agents
+            
+        final_df.to_parquet(export_path, engine='pyarrow')
         
         parquet_files = [os.path.join(config.DATA_LOG_DIR, f) for f in os.listdir(config.DATA_LOG_DIR) if f.endswith('.parquet')]
         if len(parquet_files) > config.MAX_LOG_FILES:
