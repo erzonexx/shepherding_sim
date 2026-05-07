@@ -116,6 +116,32 @@ Upon completion, the `logs/data` and `logs/visuals` folders will be automaticall
 
 ---
 
+## 📊 状態監視指標と危険判定 (State Monitoring & Danger Judgment)
+
+**[JP]**
+シミュレーションの各フレームにおいて、`Detector` クラスが羊群の状態を監視し、以下の指標を計算・記録します。また、事前に定義されたルールに基づき、危険状態をリアルタイムに検知します。
+
+**[EN]**
+At each frame of the simulation, the `Detector` class monitors the state of the flock, calculates/records the following metrics, and detects danger states in real-time based on predefined rules.
+
+### 監視指標 (Monitored Metrics)
+- **重心距離 (Distance to Goal)**: 羊群の重心から目標地点までの距離。 (Distance from the flock's Center of Mass to the goal.)
+- **分散度 (Dispersion)**: 羊群の重心から最も遠い羊までの距離。 (Distance from the COM to the furthest sheep.)
+- **平均広がり (Average Spread)**: 全ての羊から重心までの距離の平均値。 (The average distance of all sheep to the COM.)
+
+### 危険判定ルール (Danger Detection Rules)
+現在、以下の2つのルールが実装されています。 (Currently, the following two rules are implemented.)
+
+1. **群れ分裂傾向 (Flock Splitting / `danger_type: "flock_splitting"`)**
+   - **条件 (Condition)**: **分散度**がしきい値（`DANGER_DISPERSION_THRESHOLD`）を超え、**かつ**、**平均広がり**がしきい値（`DANGER_MEAN_SPREAD_THRESHOLD`）を超えた場合。 (When **Dispersion** exceeds its threshold AND **Average Spread** exceeds its threshold.)
+   - **説明 (Description)**: 群れが全体的に広がり、かつ特に離れた個体もいる深刻な分裂状態を示します。 (Indicates a severe splitting state where the flock is widely spread out on average and also has significantly distant individuals.)
+
+2. **前進停滞 (Stagnation / `danger_type: "stagnation"`)**
+   - **条件 (Condition)**: 過去の一定フレーム（`DANGER_STAGNATION_FRAMES`）間における重心距離の進捗（縮小幅）が、しきい値（`DANGER_STAGNATION_THRESHOLD`）未満の場合。 (The progress towards the goal over the recent frames is less than the threshold.)
+   - **説明 (Description)**: 羊群が一定の場所に留まり、目標に向かって効果的に進んでいない状態を示します。（※ 分散の危険が検知されていない場合のみ評価されます） (Indicates the flock is stuck and not effectively moving towards the goal. Evaluated only if no dispersion danger is detected.)
+
+---
+
 ## 開発者・共同研究者の方へ (For Developers & Collaborators)
 
 本リポジトリでは、シミュレーションによって生成される大容量のデータファイルや画像ファイル（`.parquet`, `.png`, `.gif`）は、Git の追跡対象外（`.gitignore`）に設定されています。新しくリポジトリをクローンして実行した場合、`logs/` ディレクトリはローカル環境にのみ自動生成され、リモートリポジトリ（GitHubなど）の容量を圧迫することはありません。
@@ -141,6 +167,10 @@ This section details the Parquet data schema for Student 2's downstream "Danger 
 | **X** | `float` | X座標 (小数点2桁丸め) | `120.45` |
 | **Y** | `float` | Y座標 (小数点2桁丸め) | `85.32` |
 | **Status** | `str` | エージェントの真の状態・異常ラベル (`Normal`, `A`, `B`, `Dog`)。<br>True identity/status of the agent. | `'A'` |
+| **dist_to_goal**| `float` | 羊群の重心から目標地点までの距離。<br>Distance from flock COM to goal. | `45.67` |
+| **dispersion** | `float` | 羊群の分散度（重心から最も遠い個体の距離）。<br>Flock dispersion radius. | `12.34` |
+| **mean_spread** | `float` | 羊群の平均広がり（重心からの平均距離）。<br>Average flock spread (mean distance from COM). | `8.76` |
+| **is_danger** | `int` | 危険状態フラグ (0: 正常, 1: 危険)。<br>Danger status flag (0: Normal, 1: Danger). | `0` |
 
 ###  Pandas 読み込みサンプル (Python Read Example)
 以下は、エクスポートされた Parquet ファイルを読み込み、特定の羊の軌跡や犬の動きを抽出するサンプルコードです。

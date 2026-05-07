@@ -4,14 +4,16 @@ class Detector:
     """
     a simple rule-based detector that analyzes the flock's state each frame and outputs standardized metrics and danger reports.
     """
-    def __init__(self, dispersion_threshold, stagnation_frames, stagnation_threshold):
+    def __init__(self, dispersion_threshold, mean_spread_threshold, stagnation_frames, stagnation_threshold):
         """
         Initialize the detector.
         :param dispersion_threshold: The danger threshold for flock dispersion.
+        :param mean_spread_threshold: The danger threshold for the average flock spread.
         :param stagnation_frames: The number of consecutive frames to check for "stagnation" status.
         :param stagnation_threshold: The minimum distance change considered as "progress" during stagnation.
         """
         self.dispersion_threshold = dispersion_threshold
+        self.mean_spread_threshold = mean_spread_threshold
         self.stagnation_frames = stagnation_frames
         self.stagnation_threshold = stagnation_threshold
         
@@ -33,6 +35,7 @@ class Detector:
             com = np.array([0.0, 0.0])
             dist_to_goal = np.linalg.norm(goal_pos - com)
             dispersion = 0.0
+            mean_spread = 0.0
         else:
             # (Center of Mass)
             com = np.mean(sheep_pos, axis=0)
@@ -42,6 +45,7 @@ class Detector:
             vecs_to_com = sheep_pos - com
             dists_to_com = np.linalg.norm(vecs_to_com, axis=1)
             dispersion = np.max(dists_to_com) if dists_to_com.size > 0 else 0.0
+            mean_spread = np.mean(dists_to_com) if dists_to_com.size > 0 else 0.0
 
         # update the history of distance to goal for stagnation detection
         self.history_dist_to_goal.append(dist_to_goal)
@@ -53,11 +57,11 @@ class Detector:
         danger_type = "None"
         description = "Flock status is normal."
 
-        # Rule 1: Excessive dispersion
-        if dispersion > self.dispersion_threshold:
+        # Rule 1: Excessive dispersion (compound condition)
+        if dispersion > self.dispersion_threshold and mean_spread > self.mean_spread_threshold:
             is_danger = True
             danger_type = "flock_splitting"  # Flock splitting tendency
-            description = f"Flock dispersion is too high, furthest distance reached {dispersion:.2f} meters (threshold: {self.dispersion_threshold:.2f} meters)."
+            description = f"Flock splitting: dispersion {dispersion:.2f}m (>{self.dispersion_threshold:.2f}m) and mean spread {mean_spread:.2f}m (>{self.mean_spread_threshold:.2f}m)."
 
         # Rule 2: Stagnation (only checked when no other dangers are detected)
         if not is_danger and len(self.history_dist_to_goal) == self.stagnation_frames:
@@ -72,6 +76,7 @@ class Detector:
         metrics = {
             'dist_to_goal': round(dist_to_goal, 2),
             'dispersion': round(dispersion, 2),
+            'mean_spread': round(mean_spread, 2),
             'is_danger': 1 if is_danger else 0,
         }
         

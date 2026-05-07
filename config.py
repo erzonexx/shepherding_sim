@@ -52,5 +52,6 @@ SEPARATION_RADIUS_B = 6.0      # type B's separation sensing radius (larger)
 
 # 7. danger detection settings
 DANGER_DISPERSION_THRESHOLD = 40.0 # dispersion radius > this value triggers an alarm
+DANGER_MEAN_SPREAD_THRESHOLD = 15.0 # average flock spread > this value triggers an alarm
 DANGER_STAGNATION_FRAMES = 150     # number of consecutive frames to check for stagnation
 DANGER_STAGNATION_THRESHOLD = 1.0  # if progress is less than this over the frames, it's stagnation

@@ -11,6 +11,7 @@ def main():
     print(f"Initializing simulation environment... ({mode_msg})")
     env = SwarmEnv()
     detector = Detector(dispersion_threshold=config.DANGER_DISPERSION_THRESHOLD,
+                          mean_spread_threshold=config.DANGER_MEAN_SPREAD_THRESHOLD,
                           stagnation_frames=config.DANGER_STAGNATION_FRAMES,
                           stagnation_threshold=config.DANGER_STAGNATION_THRESHOLD)
     vis = Visualizer(env)  
