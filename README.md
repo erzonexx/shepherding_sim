@@ -35,8 +35,8 @@ This project is a multi-agent-based simulation environment developed to support 
 - **異常状態の敵対的テスト (Abnormal Status Adversarial Testing)**
   - 危険判定アルゴリズムのストレステスト用に、2種類の異常個体を生成できます：
   - Supports generating two types of abnormal agents for stress-testing:
-    - **Type A (無反応 / Unresponsive)**: 牧羊犬からの反発力と群れの凝集力を無視し、さらに物理的な慣性が大きく、動きが鈍い。 / Ignores dog repulsion and flock cohesion, and exhibits high physical inertia, making it sluggish.
-    - **Type B (分散 / Dispersing)**: 凝集力が極端に低く、他個体への分離力が異常に高いため、群れの境界をさまよいます。 / Exhibits extremely low cohesion and highly amplified separation force, wandering at the edges.
+    - **Type A (無反応 / Unresponsive)**: 群れへの凝集力は通常羊と同じですが、牧羊犬への反応が大幅に弱く、慣性により方向転換が遅い個体です。 / Keeps normal flock cohesion, but has strongly reduced dog repulsion and sluggish velocity updates.
+    - **Type B (分散 / Dispersing)**: 牧羊犬への反応は通常羊と同じですが、群れへの凝集力が低く、他個体への分離力が強いため、受刺激時に群れから離れやすい個体です。 / Keeps normal dog repulsion, but has weak cohesion and stronger separation, making it more likely to disperse.
 
 - **高性能データロギング (High-Performance Data Logging)**
   - 各フレームのエージェント状態（位置、ID）を、大規模データ分析に適した **Apache Parquet** 形式で記録します。
@@ -58,10 +58,13 @@ This project is a multi-agent-based simulation environment developed to support 
 shepherding_sim/
 ├── main.py              # シミュレーション実行のメインスクリプト (Main simulation entry point)
 ├── environment.py       # 中核となるシミュレーション環境、物理演算、エージェントロジック (Core simulation environment, physics, and agent logic)
+├── detector.py          # 群れ状態の指標計算と危険判定 (Flock metrics and danger detection)
 ├── config.py            # 全ての調整可能なパラメータとシミュレーション設定 (All tunable parameters and simulation settings)
 ├── visualizer.py        # リアルタイム描画と可視化出力（PNG/MP4）の生成 (Real-time rendering and visual output generation)
+├── plot_analysis.py     # Parquetログから分析グラフを生成 (Generate analysis charts from Parquet logs)
 └── logs/                # 全ての出力ファイルが保存される自動生成ディレクトリ (Auto-generated directory for all outputs)
     ├── data/            # シミュレーションデータを *.parquet 形式で格納 (Stores simulation data in *.parquet format)
+    ├── analysis/        # 指標分析グラフを格納 (Stores metric analysis charts)
     ├── videos/          # アニメーション animation_*.mp4 を格納 (Stores animation video files)
     └── visuals/         # 軌跡画像 trajectory_*.png を格納 (Stores trajectory files)
 ```
@@ -84,11 +87,12 @@ The simulation behavior can be tuned in `config.py`.
 | `DOG_SENSING_RANGE` | 50.0 | 羊が犬を感知して逃げ始める半径距離。<br>Radius within which sheep start reacting to the dog. |
 | `COHESION_THRESHOLD` | 25.0 | 犬が「Drive」から「Collect」に移行する羊の散らばりしきい値。<br>Max flock dispersion that triggers "Collect" mode. |
 | `GOAL_RADIUS` | 20.0 | 全ての羊がこの半径内に入ると成功と判定される。<br>Radius around the goal center to consider the mission accomplished. |
-| `NUM_ABNORMAL_A` | 2 | Type A（無反応）の異常羊の数。<br>Number of Type A (Unresponsive) sheep. |
-| `NUM_ABNORMAL_B` | 2 | Type B（分散）の異常羊の数。<br>Number of Type B (Dispersing) sheep. |
-| `INERTIA_FACTOR_A` | 0.2 | Type A の慣性係数（値が低いほど動きが鈍い）。<br>Inertia factor for Type A sheep (lower is more sluggish). |
+| `NUM_ABNORMAL_A` | 8 | Type A（無反応）の異常羊の数。<br>Number of Type A (Unresponsive) sheep. |
+| `NUM_ABNORMAL_B` | 8 | Type B（分散）の異常羊の数。<br>Number of Type B (Dispersing) sheep. |
+| `WEIGHT_DOG_REPULSION_A_FACTOR` | 0.15 | Type A の犬への反応係数。通常羊の15%。凝集力は通常羊と同じ。<br>Dog-repulsion factor for Type A sheep: 15% of normal. Cohesion remains 100% of normal. |
+| `INERTIA_FACTOR_A` | 0.15 | Type A の慣性係数（値が低いほど受力更新が小さく、動きが鈍い）。<br>Inertia factor for Type A sheep (lower means more sluggish force response). |
 | `WEIGHT_COHESION_B_FACTOR` | 0.15 | Type B の凝集力係数（通常羊との比較）。<br>Cohesion force factor for Type B sheep (vs normal). |
-| `WEIGHT_SEPARATION_B_FACTOR`| 3.0 | Type B の分離力係数（通常羊との比較）。<br>Separation force factor for Type B sheep (vs normal). |
+| `WEIGHT_SEPARATION_B_FACTOR`| 1.5 | Type B の分離力係数（通常羊との比較）。犬への反応は通常羊と同じ。<br>Separation force factor for Type B sheep (vs normal). Dog repulsion remains 100% of normal. |
 | `SEPARATION_RADIUS_B` | 6.0 | Type B の分離力感知半径（通常より広い）。<br>Separation sensing radius for Type B sheep (larger). |
 
 ---
@@ -99,15 +103,15 @@ The simulation behavior can be tuned in `config.py`.
 ```bash
 pip install numpy pandas pyarrow matplotlib
 ```
-*※ GIFを保存する場合は、環境により `Pillow` または `imagemagick` が必要になる場合があります。*
-*(Note: `Pillow` or `imagemagick` may be required for saving GIF animations.)*
+*※ MP4を保存する場合は、環境により `ffmpeg` が必要になる場合があります。*
+*(Note: `ffmpeg` may be required for saving MP4 animations.)*
 
 **2. シミュレーションの実行 (Run Simulation)**
 ```bash
 python main.py
 ```
-実行が完了すると、自動的に `logs/data` および `logs/visuals` フォルダが作成され、結果が保存されます。
-Upon completion, the `logs/data` and `logs/visuals` folders will be automatically created and populated with results.
+実行が完了すると、自動的に `logs/data`, `logs/visuals`, `logs/videos`, `logs/analysis` フォルダが作成され、結果が保存されます。
+Upon completion, the `logs/data`, `logs/visuals`, `logs/videos`, and `logs/analysis` folders will be automatically created and populated with results.
 
 > **💡 Tip (便利なヒント):**
 > VSCodeなどのエディタに **`parquet-viewer`** 拡張機能をインストールすると、保存された `.parquet` ファイルの中身を手軽にプレビューすることができます。

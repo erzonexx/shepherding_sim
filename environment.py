@@ -121,9 +121,16 @@ class SwarmEnv:
         self.dog_pos = np.clip(self.dog_pos, 0, config.SPACE_SIZE)
 
         # --- dynamic weights based on sheep status ---
-        cohesion_weights = np.where(self.sheep_status == 'A', 0.0, 
-                                    np.where(self.sheep_status == 'B', config.WEIGHT_COHESION * config.WEIGHT_COHESION_B_FACTOR, config.WEIGHT_COHESION))[:, np.newaxis]
-        dog_repulsion_weights = np.where(self.sheep_status == 'A', config.WEIGHT_DOG_REPULSION_A, config.WEIGHT_DOG_REPULSION)[:, np.newaxis]
+        cohesion_weights = np.where(
+            self.sheep_status == 'B',
+            config.WEIGHT_COHESION * config.WEIGHT_COHESION_B_FACTOR,
+            config.WEIGHT_COHESION
+        )[:, np.newaxis]
+        dog_repulsion_weights = np.where(
+            self.sheep_status == 'A',
+            config.WEIGHT_DOG_REPULSION * config.WEIGHT_DOG_REPULSION_A_FACTOR,
+            config.WEIGHT_DOG_REPULSION
+        )[:, np.newaxis]
         separation_weights = np.where(self.sheep_status == 'B', config.WEIGHT_SEPARATION * config.WEIGHT_SEPARATION_B_FACTOR, config.WEIGHT_SEPARATION)[:, np.newaxis]
 
         # --- sheep logic ---
