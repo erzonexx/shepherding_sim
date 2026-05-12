@@ -1,6 +1,9 @@
 # Simulation logs
 logs/
 
+# Local experiment notes and presentation materials
+project_docs/
+
 # Python cache files
 __pycache__/
 *.py[cod]

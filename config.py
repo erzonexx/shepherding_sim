@@ -2,7 +2,8 @@ import numpy as np
 
 # 0. simulation settings
 MAX_STEPS = 2000
-USE_FIXED_SEED = False  
+USE_FIXED_SEED = True 
+RANDOM_SEED = 70
 MAX_LOG_FILES = 30           # Maximum number of log files to keep
 SAVE_TRAJECTORY_PNG = True
 SAVE_ANIMATION_MP4 = True    # Enable MP4 video generation
@@ -10,6 +11,8 @@ DATA_LOG_DIR = "logs/data"
 ANALYSIS_LOG_DIR = "logs/analysis"
 VISUAL_LOG_DIR = "logs/visuals"
 VIDEO_LOG_DIR = "logs/videos"
+CONTROL_LOG_DIR = "logs/control"
+REPAIR_ENABLED = True        # Enable alarm-driven shepherd repair intervention
 
 # 1. space and goal settings
 SPACE_SIZE = 200.0
@@ -42,10 +45,10 @@ DOG_SENSING_RANGE = 50.0       # radius within which sheep react to the dog
 EPSILON = 1e-6                 # small number to avoid division by zero
 
 # 6. abnormal sheep settings
-NUM_ABNORMAL_A = 2             # number of abnormal sheep A (Unresponsive)
-NUM_ABNORMAL_B = 2             # number of abnormal sheep B (Dispersing)
+NUM_ABNORMAL_A = 3             # number of abnormal sheep A (Unresponsive)
+NUM_ABNORMAL_B = 3             # number of abnormal sheep B (Dispersing)
 WEIGHT_DOG_REPULSION_A_FACTOR = 0.15 # type A dog fear factor (vs normal)
-INERTIA_FACTOR_A = 0.15        # type A's sluggishness (lower is more sluggish)
+INERTIA_FACTOR_A = 0.95        # type A inertia retention (higher is more sluggish)
 WEIGHT_COHESION_B_FACTOR = 0.15  # type B cohesion force factor (vs normal)
 WEIGHT_SEPARATION_B_FACTOR = 1.5 # type B separation force factor (vs normal)
 SEPARATION_RADIUS_B = 6.0      # type B's separation sensing radius (larger)

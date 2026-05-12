@@ -7,7 +7,7 @@ from datetime import datetime
 class SwarmEnv:
     def __init__(self):
         if config.USE_FIXED_SEED:
-            np.random.seed(42)
+            np.random.seed(config.RANDOM_SEED)
             
         self.goal_pos = np.random.uniform(config.GOAL_MARGIN, config.SPACE_SIZE - config.GOAL_MARGIN, 2)
         self.sheep_start_center = np.random.uniform(config.SHEEP_START_MARGIN, config.SPACE_SIZE - config.SHEEP_START_MARGIN, 2)
@@ -34,6 +34,9 @@ class SwarmEnv:
         self.current_frame = 0
         self.history_data = []
         self.metrics_data = []
+        self.control_data = []
+        self.current_mode = "TARGET_TRACKING"
+        self.drive_point = np.copy(self.dog_pos)
 
     def _record_state(self):
         # Record Dog's state
@@ -47,6 +50,21 @@ class SwarmEnv:
         metrics_dict = metrics.copy()
         metrics_dict['Frame'] = self.current_frame
         self.metrics_data.append(metrics_dict)
+
+    def _record_control_state(self, frame, alarms, current_mode, drive_point, dog_pos_before):
+        alarm_text = ";".join(alarms) if alarms else "none"
+        self.control_data.append({
+            'Frame': frame,
+            'repair_enabled': int(config.REPAIR_ENABLED),
+            'alarms': alarm_text,
+            'current_mode': current_mode,
+            'drive_point_x': round(float(drive_point[0]), 2),
+            'drive_point_y': round(float(drive_point[1]), 2),
+            'dog_x_before': round(float(dog_pos_before[0]), 2),
+            'dog_y_before': round(float(dog_pos_before[1]), 2),
+            'dog_x_after': round(float(self.dog_pos[0]), 2),
+            'dog_y_after': round(float(self.dog_pos[1]), 2),
+        })
 
     def save_data_to_parquet(self, timestamp):
         if not os.path.exists(config.DATA_LOG_DIR):
@@ -81,8 +99,29 @@ class SwarmEnv:
                 except OSError as e:
                     print(f"Warning: Could not remove old log file {f}: {e}")
 
-    def step(self):
+    def save_control_to_parquet(self, timestamp):
+        if not os.path.exists(config.CONTROL_LOG_DIR):
+            os.makedirs(config.CONTROL_LOG_DIR)
+
+        export_path = os.path.join(config.CONTROL_LOG_DIR, f"control_{timestamp}.parquet")
+        df_control = pd.DataFrame(self.control_data)
+        df_control.to_parquet(export_path, engine='pyarrow')
+
+        control_files = [os.path.join(config.CONTROL_LOG_DIR, f) for f in os.listdir(config.CONTROL_LOG_DIR) if f.endswith('.parquet')]
+        if len(control_files) > config.MAX_LOG_FILES:
+            control_files.sort(key=os.path.getmtime)
+            for f in control_files[:-config.MAX_LOG_FILES]:
+                try:
+                    os.remove(f)
+                except OSError as e:
+                    print(f"Warning: Could not remove old control log file {f}: {e}")
+
+    def step(self, alarms=None):
         """execute one frame of physics calculation. if the sheep reaches the goal, return True"""
+        if alarms is None:
+            alarms = []
+
+        frame = self.current_frame
         self._record_state()
         self.current_frame += 1
 
@@ -98,27 +137,52 @@ class SwarmEnv:
         if np.all(distances_to_goal < config.GOAL_RADIUS):
             return True
 
-        # calculate distances of all sheep to the center of mass (COM)
+        # --- shepherd mode decision ---
+        if not config.REPAIR_ENABLED:
+            current_mode = "TARGET_TRACKING"
+        elif "flock_splitting" in alarms:
+            current_mode = "COHESION_PRIORITY"
+        elif "stagnation" in alarms:
+            current_mode = "HARD_TO_GUIDE"
+        else:
+            current_mode = "TARGET_TRACKING"
+        self.current_mode = current_mode
+
+        # --- shepherd drive-point calculation ---
         vecs_to_com = self.sheep_pos - com
         dists_to_com = np.linalg.norm(vecs_to_com, axis=1)
         max_dist_to_com = np.max(dists_to_com)
 
-        # Strömbom model state machine: Collect or Drive
-        if max_dist_to_com > config.COHESION_THRESHOLD:
-            # Collect mode: drive the furthest sheep towards the COM
+        if current_mode == "TARGET_TRACKING":
+            if max_dist_to_com > config.COHESION_THRESHOLD:
+                furthest_idx = np.argmax(dists_to_com)
+                furthest_pos = self.sheep_pos[furthest_idx]
+                dir_from_com = vecs_to_com[furthest_idx] / (max_dist_to_com + config.EPSILON)
+                drive_point = furthest_pos + dir_from_com * config.DOG_DRIVE_DISTANCE
+            else:
+                dir_to_goal = to_goal / (dist_to_goal + config.EPSILON)
+                drive_point = com - dir_to_goal * config.DOG_DRIVE_DISTANCE
+        elif current_mode == "HARD_TO_GUIDE":
+            distances_to_goal = np.linalg.norm(self.sheep_pos - self.goal_pos, axis=1)
+            target_idx = np.argmax(distances_to_goal)
+            target_pos = self.sheep_pos[target_idx]
+            dir_to_goal = (self.goal_pos - target_pos) / (distances_to_goal[target_idx] + config.EPSILON)
+            drive_point = target_pos - dir_to_goal * 3.0
+        elif current_mode == "COHESION_PRIORITY":
             furthest_idx = np.argmax(dists_to_com)
             furthest_pos = self.sheep_pos[furthest_idx]
-            dir_from_com = vecs_to_com[furthest_idx] / (max_dist_to_com + 1e-6)
-            drive_point = furthest_pos + dir_from_com * config.DOG_DRIVE_DISTANCE
+            dir_from_com = vecs_to_com[furthest_idx] / (max_dist_to_com + config.EPSILON)
+            drive_point = furthest_pos + dir_from_com * 10.0
         else:
-            # Drive mode: push the compact flock towards the goal
-            dir_to_goal = to_goal / (dist_to_goal + 1e-6)
-            drive_point = com - dir_to_goal * config.DOG_DRIVE_DISTANCE
+            raise ValueError(f"Unknown shepherd mode: {current_mode}")
+        self.drive_point = np.copy(drive_point)
 
         dog_desired_vel = drive_point - self.dog_pos
+        dog_pos_before = np.copy(self.dog_pos)
         self.dog_vel = self._limit_speed(dog_desired_vel, config.DOG_MAX_SPEED)
         self.dog_pos += self.dog_vel
         self.dog_pos = np.clip(self.dog_pos, 0, config.SPACE_SIZE)
+        self._record_control_state(frame, alarms, current_mode, drive_point, dog_pos_before)
 
         # --- dynamic weights based on sheep status ---
         cohesion_weights = np.where(
@@ -163,9 +227,9 @@ class SwarmEnv:
         # combine the forces and update the velocity and position
         total_force = cohesion + dog_repulsion + boundary_force + separation
         
-        # apply inertia (sluggish turning) for Type A sheep
-        inertia_multiplier = np.where(self.sheep_status == 'A', config.INERTIA_FACTOR_A, 1.0)[:, np.newaxis]
-        self.sheep_vel += total_force * inertia_multiplier
+        # Type A keeps most of its current velocity direction and only weakly accepts new force.
+        force_response = np.where(self.sheep_status == 'A', 1.0 - config.INERTIA_FACTOR_A, 1.0)[:, np.newaxis]
+        self.sheep_vel += total_force * force_response
         
         self.sheep_vel = self._limit_speed_array(self.sheep_vel, config.SHEEP_MAX_SPEED)
         self.sheep_pos += self.sheep_vel

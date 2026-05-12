@@ -20,16 +20,16 @@ def main():
 
     print("The shepherd starts working!")
     while step_count < config.MAX_STEPS:
-        # 1. physics environment simulation one frame
-        reached_goal = env.step()
-
-        # 2. run the detector to analyze the flock's state and record metrics
-        metrics, report = detector.analyze_flock(env.sheep_pos, env.goal_pos)
+        # 1. run the detector to analyze the flock's state and record metrics
+        alarms, metrics, report = detector.detect(env.sheep_pos, env.goal_pos)
         env.record_frame_metrics(metrics)
         if report['is_danger']:
             # to avoid spamming too many warnings, we only print every 10 frames when in danger
             if step_count % 10 == 0:
                 print(f"🚨 [Frame {step_count}] Danger Warning! Type: {report['danger_type']}. Desc: {report['description']}")
+
+        # 2. physics environment simulation one frame
+        reached_goal = env.step(alarms)
         
         # 3. refresh the screen
         vis.render(env)
@@ -48,6 +48,7 @@ def main():
     print("Exporting simulation data...")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     env.save_data_to_parquet(timestamp)
+    env.save_control_to_parquet(timestamp)
     
     if config.SAVE_TRAJECTORY_PNG:
         vis.save_trajectory(env, timestamp)

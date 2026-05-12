@@ -88,3 +88,11 @@ class Detector:
         }
 
         return metrics, report
+
+    def detect(self, sheep_pos, goal_pos):
+        """
+        Return the active alarm list while preserving metrics/report for logging.
+        """
+        metrics, report = self.analyze_flock(sheep_pos, goal_pos)
+        alarms = [report['danger_type']] if report['is_danger'] else []
+        return alarms, metrics, report
