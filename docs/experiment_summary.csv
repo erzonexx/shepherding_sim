@@ -1,0 +1,10 @@
+Case,Timestamp,Purpose,A,B,Repair,Success,Frames,FinalDist,MinDist,FinalDisp,MaxDisp,DangerFrames,ModeCounts,AlarmCounts
+C00,20260512_175606,Normal baseline,0,0,False,True,145,8.84,8.84,12.53,52.45,11,{'TARGET_TRACKING': 144},"{'none': 133, 'flock_splitting': 11}"
+C01,20260512_175825,"Mixed anomaly, no repair",2,2,False,False,2000,180.94,1.91,19.08,55.45,1234,{'TARGET_TRACKING': 2000},"{'stagnation': 1190, 'none': 766, 'flock_splitting': 44}"
+C02,20260512_180028,"Mixed anomaly, repair on",2,2,True,True,181,6.23,1.87,25.75,52.45,12,"{'TARGET_TRACKING': 168, 'COHESION_PRIORITY': 12}","{'none': 168, 'flock_splitting': 12}"
+C03,20260512_180132,"A-only, no repair",4,0,False,True,184,6.6,0.32,25.65,52.45,13,{'TARGET_TRACKING': 183},"{'none': 170, 'flock_splitting': 13}"
+C04,20260512_180252,"A-only, repair on",4,0,True,True,462,4.51,0.45,16.47,52.45,155,"{'TARGET_TRACKING': 306, 'HARD_TO_GUIDE': 142, 'COHESION_PRIORITY': 13}","{'none': 306, 'stagnation': 142, 'flock_splitting': 13}"
+C05,20260512_180518,"B-only, no repair",0,4,False,False,2000,141.16,11.21,21.57,54.31,1010,{'TARGET_TRACKING': 2000},"{'none': 990, 'stagnation': 970, 'flock_splitting': 40}"
+C06,20260512_180821,"B-only, repair on",0,4,True,False,2000,113.32,0.87,37.2,98.91,1148,"{'TARGET_TRACKING': 852, 'HARD_TO_GUIDE': 809, 'COHESION_PRIORITY': 339}","{'none': 852, 'stagnation': 809, 'flock_splitting': 339}"
+C07,20260512_181548,"Stress mixed, no repair",3,3,False,False,2000,132.08,0.2,23.87,57.58,1120,{'TARGET_TRACKING': 2000},"{'stagnation': 1097, 'none': 880, 'flock_splitting': 23}"
+C08,20260512_182132,"Stress mixed, repair on",3,3,True,False,2000,35.03,0.37,25.57,104.29,1016,"{'TARGET_TRACKING': 984, 'HARD_TO_GUIDE': 829, 'COHESION_PRIORITY': 187}","{'none': 984, 'stagnation': 829, 'flock_splitting': 187}"

@@ -66,21 +66,15 @@ def plot_metrics_from_files(file_paths, output_dir):
     print(f"✅ Analysis charts saved:\n- {fig1_path}\n- {fig2_path}")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Analyze and compare shepherd simulation data from .parquet files.')
-    parser.add_argument('files', nargs='+', help='One or more .parquet file paths to compare.')
-    parser.add_argument('--output', default=config.ANALYSIS_LOG_DIR, help='Directory to save the output charts.')
-    
-    # In the main function, import config so the script can run independently
     try:
         import config
-        output_dir = config.ANALYSIS_LOG_DIR
+        default_output_dir = config.ANALYSIS_LOG_DIR
     except (ImportError, AttributeError):
-        output_dir = 'logs/analysis' # Fallback if config is not available
+        default_output_dir = 'logs/analysis'
 
+    parser = argparse.ArgumentParser(description='Analyze and compare shepherd simulation data from .parquet files.')
+    parser.add_argument('files', nargs='+', help='One or more .parquet file paths to compare.')
+    parser.add_argument('--output', default=default_output_dir, help='Directory to save the output charts.')
     args = parser.parse_args()
-    
-    # if the user specifies an output directory via command line, override the default from config
-    if args.output != output_dir:
-        output_dir = args.output
-        
-    plot_metrics_from_files(args.files, output_dir)
+
+    plot_metrics_from_files(args.files, args.output)

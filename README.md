@@ -1,285 +1,323 @@
 # Swarm Shepherding Simulation
 
-A Multi-Agent Simulation Framework for CSS Laboratory, Hiroshima University.
+A 2D multi-agent shepherding simulation for the first-month minimum demo loop:
 
----
+1. A normal flock can be guided to a target region.
+2. Abnormal sheep can create difficult or failed control cases.
+3. A simple rule-based danger detector can trigger repair modes.
+4. Repair can improve at least one abnormal scenario while still leaving clear limitation cases.
 
-## 概要 (Overview)
+The current project is intentionally lightweight. It is not intended to be a final optimized shepherding algorithm.
 
-**[JP]**
-本プロジェクトは、広島大学CSS研究室における研究活動を支援するために開発された、マルチエージェントベースのシミュレーション環境です。本シミュレータは、群知能モデルである **Boids** と、**Strömbom** の牧羊アルゴリズムを実装しており、牧羊犬による羊群の制御ダイナミクスを再現します。主要な機能として、通常追跡、引導困難個体対応、凝集優先の3つの牧羊犬行動モードを、警報状態に応じて切り替える制御ロジックが組み込まれています。
-
-**[EN]**
-This project is a multi-agent-based simulation environment developed to support research activities at the CSS Laboratory, Hiroshima University. The simulator implements the **Boids** swarm intelligence model and **Strömbom's** shepherding algorithm to reproduce the dynamics of flock control by a shepherd dog. A key feature is its alarm-driven control logic, which switches the dog between target tracking, hard-to-guide intervention, and cohesion-priority repair modes.
-
----
-
-## 主な機能 (Features)
-
-- **再現性のあるシミュレーション (Reproducible Simulations)**
-  - 固定ランダムシード (`config.USE_FIXED_SEED`) によりエージェントの初期位置を制御し、実験の再現性を確保します。
-  - Ensures consistent experimental conditions through a fixed random seed, which governs the initial positions of agents.
-
-- **警報駆動の牧羊犬モード (Alarm-driven Shepherd Modes)**
-  - 修復介入が有効な場合、牧羊犬の行動は警報状態に応じて3つのモードを切り替えます。
-  - When repair intervention is enabled, the shepherd dog switches between three modes:
-    - **TARGET_TRACKING**: 通常時の追跡モード。群れが散っていれば最遠個体を回収し、十分に凝集していれば目標地点へ押し進めます。
-    - Normal tracking mode. It collects the furthest sheep when the flock is dispersed, otherwise drives the flock toward the goal.
-    - **HARD_TO_GUIDE**: `stagnation` 警報時の介入モード。目標から最も遠い羊の背後3.0mに回り込み、強く押し出します。
-    - Intervention mode for `stagnation`. The dog moves 3.0m behind the sheep farthest from the goal.
-    - **COHESION_PRIORITY**: `flock_splitting` 警報時の凝集優先モード。重心から最も遠い羊の外側10.0mに回り込みます。
-    - Cohesion-priority mode for `flock_splitting`. The dog moves 10.0m outside the sheep farthest from the flock COM.
-
-- **物理ベースの相互作用 (Physics-based Agent Interaction)**
-  - **距離減衰する反発力 (Distance-Decaying Repulsion)**: 犬から羊への反発力は距離に反比例し、より現実的な回避行動をモデル化します。
-  - The repulsion force exerted by the dog on the sheep is inversely proportional to the distance, creating a more realistic avoidance behavior.
-
-- **異常状態の敵対的テスト (Abnormal Status Adversarial Testing)**
-  - 危険判定アルゴリズムのストレステスト用に、2種類の異常個体を生成できます：
-  - Supports generating two types of abnormal agents for stress-testing:
-    - **Type A (無反応 / Unresponsive)**: 群れへの凝集力と最大速度は通常羊と同じですが、牧羊犬への反応が大幅に弱く、高い慣性により方向転換が非常に遅い個体です。 / Keeps normal flock cohesion and max speed, but has strongly reduced dog repulsion and high inertia.
-    - **Type B (分散 / Dispersing)**: 牧羊犬への反応と最大速度は通常羊と同じですが、群れへの凝集力が低く、他個体への分離力が強いため、受刺激時に群れから離れやすい個体です。 / Keeps normal dog repulsion and max speed, but has weak cohesion and stronger separation, making it more likely to disperse.
-
-- **高性能データロギング (High-Performance Data Logging)**
-  - 各フレームのエージェント状態（位置、ID）を、大規模データ分析に適した **Apache Parquet** 形式で記録します。
-  - Agent states for each frame are recorded in the efficient Apache Parquet format, ideal for large-scale data analysis.
-
-- **データと同期した可視化出力 (Synchronized Visual & Data Outputs)**
-  - シミュレーション完了時、データファイルとタイムスタンプが一致する静的な軌跡プロット（PNG）とアニメーション（MP4）を生成します。
-  - At the end of each simulation, a static trajectory plot (PNG) and an animated MP4 video are generated with timestamps that match the corresponding data file.
-
-- **ログの自動ローテーション (Automated Log Rotation)**
-  - ログファイル数 (`MAX_LOG_FILES`) を一定に保ち、最も古いデータセット（Parquet, PNG, MP4）を自動的に削除してディスクスペースを管理します。
-  - A built-in cleanup mechanism maintains a fixed number of recent logs and automatically deletes the oldest data sets to manage disk space.
-
----
-
-## ディレクトリ構成 (Directory Structure)
+## Project Structure
 
 ```text
 shepherding_sim/
-├── main.py              # シミュレーション実行のメインスクリプト (Main simulation entry point)
-├── environment.py       # 中核となるシミュレーション環境、物理演算、エージェントロジック (Core simulation environment, physics, and agent logic)
-├── detector.py          # 群れ状態の指標計算と危険判定 (Flock metrics and danger detection)
-├── config.py            # 全ての調整可能なパラメータとシミュレーション設定 (All tunable parameters and simulation settings)
-├── visualizer.py        # リアルタイム描画と可視化出力（PNG/MP4）の生成 (Real-time rendering and visual output generation)
-├── plot_analysis.py     # Parquetログから分析グラフを生成 (Generate analysis charts from Parquet logs)
-└── logs/                # 全ての出力ファイルが保存される自動生成ディレクトリ (Auto-generated directory for all outputs)
-    ├── data/            # シミュレーションデータを *.parquet 形式で格納 (Stores simulation data in *.parquet format)
-    ├── control/         # 修復モードの診断ログを *.parquet 形式で格納 (Stores repair-controller diagnostic logs)
-    ├── analysis/        # 指標分析グラフを格納 (Stores metric analysis charts)
-    ├── videos/          # アニメーション animation_*.mp4 を格納 (Stores animation video files)
-    └── visuals/         # 軌跡画像 trajectory_*.png を格納 (Stores trajectory files)
+|-- main.py                 # Single-run simulation entry point
+|-- run_experiments.py      # Fixed C00-C08 demo experiment runner
+|-- config.py               # Tunable parameters and output settings
+|-- environment.py          # Core environment, physics, agents, control modes
+|-- detector.py             # Flock metrics and danger detection rules
+|-- visualizer.py           # Live rendering, trajectory PNG, animation MP4
+|-- plot_analysis.py        # Metric plotting from parquet logs
+|-- docs/
+|   |-- DEMO_REPORT.md
+|   |-- experiment_summary.csv
+|-- logs/                   # Auto-generated local outputs
 ```
 
----
+## Quick Start
 
-## ⚙️ パラメータ設定 (Configuration)
+Install dependencies:
 
-シミュレーションの挙動は `config.py` で調整可能です。
-The simulation behavior can be tuned in `config.py`.
-
-| Parameter (変数) | Value | Description (説明) |
-| :--- | :---: | :--- |
-| `REPAIR_ENABLED` | `True` | 警報に基づく牧羊犬修復介入モードを有効化する。`False` の場合は常に `TARGET_TRACKING`。<br>Enables alarm-driven shepherd repair intervention. If `False`, the dog always uses `TARGET_TRACKING`. |
-| `RANDOM_SEED` | 70 | `USE_FIXED_SEED` が `True` の場合に使用するランダムシード。<br>Random seed used when `USE_FIXED_SEED` is `True`. |
-| `SHEEP_MAX_SPEED` | 0.7 | 羊の最大速度。質量感を持たせるために低めに設定。<br>Max speed of sheep. Kept low to simulate mass. |
-| `DOG_MAX_SPEED` | 1.5 | 犬の最大速度。羊を回り込むための十分な機動力。<br>Max speed of dog. Must be faster than sheep. |
-| `WEIGHT_COHESION` | 0.01 | 羊が群れ（中心）へまとまろうとする力の基本強度。<br>Base strength of the flock's desire to converge. |
-| `WEIGHT_SEPARATION` | 2.0 | 羊同士の重なりを防ぐ反発力の基本強度。<br>Base strength of repulsion force to prevent sheep overlapping. |
-| `WEIGHT_DOG_REPULSION` | 10.0 | 犬への恐怖（犬から逃げる強さ）。距離に反比例。<br>Fear of the dog. Inversely proportional to distance. |
-| `SEPARATION_RADIUS_NORMAL` | 3.0 | 通常の羊が他個体を避け始める距離。<br>Separation sensing radius for normal sheep. |
-| `DOG_SENSING_RANGE` | 50.0 | 羊が犬を感知して逃げ始める半径距離。<br>Radius within which sheep start reacting to the dog. |
-| `COHESION_THRESHOLD` | 25.0 | 犬が「Drive」から「Collect」に移行する羊の散らばりしきい値。<br>Max flock dispersion that triggers "Collect" mode. |
-| `GOAL_RADIUS` | 20.0 | 全ての羊がこの半径内に入ると成功と判定される。<br>Radius around the goal center to consider the mission accomplished. |
-| `NUM_ABNORMAL_A` | 2 | Type A（無反応）の異常羊の数。<br>Number of Type A (Unresponsive) sheep. |
-| `NUM_ABNORMAL_B` | 2 | Type B（分散）の異常羊の数。<br>Number of Type B (Dispersing) sheep. |
-| `WEIGHT_DOG_REPULSION_A_FACTOR` | 0.15 | Type A の犬への反応係数。通常羊の15%。凝集力は通常羊と同じ。<br>Dog-repulsion factor for Type A sheep: 15% of normal. Cohesion remains 100% of normal. |
-| `INERTIA_FACTOR_A` | 0.95 | Type A の慣性保持係数。値が高いほど現在の速度方向を保持し、方向転換が遅くなる。<br>Inertia-retention factor for Type A sheep. Higher values preserve the current velocity direction and make turning slower. |
-| `WEIGHT_COHESION_B_FACTOR` | 0.15 | Type B の凝集力係数（通常羊との比較）。<br>Cohesion force factor for Type B sheep (vs normal). |
-| `WEIGHT_SEPARATION_B_FACTOR`| 1.5 | Type B の分離力係数（通常羊との比較）。犬への反応は通常羊と同じ。<br>Separation force factor for Type B sheep (vs normal). Dog repulsion remains 100% of normal. |
-| `SEPARATION_RADIUS_B` | 6.0 | Type B の分離力感知半径（通常より広い）。<br>Separation sensing radius for Type B sheep (larger). |
-
----
-
-## 🚀 実行方法 (How to Run)
-
-**1. 依存ライブラリのインストール (Install Dependencies)**
 ```bash
-pip install numpy pandas pyarrow matplotlib
+pip install -r requirements.txt
 ```
-*※ MP4を保存する場合は、環境により `ffmpeg` が必要になる場合があります。*
-*(Note: `ffmpeg` may be required for saving MP4 animations.)*
 
-**2. シミュレーションの実行 (Run Simulation)**
+MP4 export requires `ffmpeg` to be installed and available on `PATH`.
+
+Run one simulation using the current `config.py`:
+
 ```bash
 python main.py
 ```
-実行が完了すると、自動的に `logs/data`, `logs/control`, `logs/visuals`, `logs/videos`, `logs/analysis` フォルダが作成され、結果が保存されます。
-Upon completion, the `logs/data`, `logs/control`, `logs/visuals`, `logs/videos`, and `logs/analysis` folders will be automatically created and populated with results.
 
-> **💡 Tip (便利なヒント):**
-> VSCodeなどのエディタに **`parquet-viewer`** 拡張機能をインストールすると、保存された `.parquet` ファイルの中身を手軽にプレビューすることができます。
-> You can install an extension like **`parquet-viewer`** in your IDE (e.g., VSCode) to easily browse and preview the saved `.parquet` data files.
+Run the fixed C00-C08 demo suite:
 
+```bash
+python run_experiments.py
+```
 
----
+Save trajectory PNGs for the demo suite:
 
-## 📊 状態監視指標と危険判定 (State Monitoring & Danger Judgment)
+```bash
+python run_experiments.py --visuals
+```
 
-**[JP]**
-シミュレーションの各フレームにおいて、`Detector` クラスが羊群の状態を監視し、以下の指標を計算・記録します。また、事前に定義されたルールに基づき、危険状態をリアルタイムに検知します。
+Save both trajectory PNGs and MP4 animations:
 
-**[EN]**
-At each frame of the simulation, the `Detector` class monitors the state of the flock, calculates/records the following metrics, and detects danger states in real-time based on predefined rules.
+```bash
+python run_experiments.py --visuals --video
+```
 
-### 監視指標 (Monitored Metrics)
-- **重心距離 (Distance to Goal)**: 羊群の重心から目標地点までの距離。 (Distance from the flock's Center of Mass to the goal.)
-- **分散度 (Dispersion)**: 羊群の重心から最も遠い羊までの距離。 (Distance from the COM to the furthest sheep.)
-- **平均広がり (Average Spread)**: 全ての羊から重心までの距離の平均値。 (The average distance of all sheep to the COM.)
+The experiment runner temporarily changes `config` values in memory for each case. It does not rewrite `config.py`.
 
-### 危険判定ルール (Danger Detection Rules)
-現在、以下の2つのルールが実装されています。 (Currently, the following two rules are implemented.)
+## Model Overview
 
-1. **群れ分裂傾向 (Flock Splitting / `danger_type: "flock_splitting"`)**
-   - **条件 (Condition)**: **分散度**がしきい値（`DANGER_DISPERSION_THRESHOLD`）を超え、**かつ**、**平均広がり**がしきい値（`DANGER_MEAN_SPREAD_THRESHOLD`）を超えた場合。 (When **Dispersion** exceeds its threshold AND **Average Spread** exceeds its threshold.)
-   - **説明 (Description)**: 群れが全体的に広がり、かつ特に離れた個体もいる深刻な分裂状態を示します。 (Indicates a severe splitting state where the flock is widely spread out on average and also has significantly distant individuals.)
+The simulation combines two standard ideas:
 
-2. **前進停滞 (Stagnation / `danger_type: "stagnation"`)**
-   - **条件 (Condition)**: 過去の一定フレーム（`DANGER_STAGNATION_FRAMES`）間における重心距離の進捗（縮小幅）が、しきい値（`DANGER_STAGNATION_THRESHOLD`）未満の場合。 (The progress towards the goal over the recent frames is less than the threshold.)
-   - **説明 (Description)**: 羊群が一定の場所に留まり、目標に向かって効果的に進んでいない状態を示します。（※ 分散の危険が検知されていない場合のみ評価されます） (Indicates the flock is stuck and not effectively moving towards the goal. Evaluated only if no dispersion danger is detected.)
+- Boids-style flocking: sheep move according to cohesion, separation, boundary avoidance, and repulsion from the shepherd dog.
+- Shepherding control inspired by Strombom-style driving and collecting: the dog either drives the flock toward the goal or moves outside the most distant sheep to collect it back into the flock.
 
----
+This model was chosen because it gives a visible 2D system, clear state variables, simple control inputs, and interpretable failure cases.
 
-## 開発者・共同研究者の方へ (For Developers & Collaborators)
+## World
 
-本リポジトリでは、シミュレーションによって生成される大容量のデータファイルや画像ファイル（`.parquet`, `.png`, `.gif`）は、Git の追跡対象外（`.gitignore`）に設定されています。新しくリポジトリをクローンして実行した場合、`logs/` ディレクトリはローカル環境にのみ自動生成され、リモートリポジトリ（GitHubなど）の容量を圧迫することはありません。
+| Item | Implementation |
+| :--- | :--- |
+| Space | Square 2D plane, size `config.SPACE_SIZE` |
+| Goal | Random position sampled with the fixed seed |
+| Goal region | Circle with radius `config.GOAL_RADIUS` |
+| Success condition | All sheep are within `GOAL_RADIUS` of the goal |
+| Time horizon | `config.MAX_STEPS` frames |
+| Seed | `config.RANDOM_SEED` when `config.USE_FIXED_SEED = True` |
 
-In this repository, the generated simulation data and visual files (`.parquet`, `.png`, `.gif`) are explicitly ignored by Git via `.gitignore`. When you clone the repository and run the simulation, the `logs/` directory will be automatically generated locally, preventing these large files from bloating the remote repository.
+## Agents
 
----
+### Sheep
 
-## データ仕様 (Data Schema)
+Each sheep has:
 
-シミュレーション結果は `logs/data/data_YYYYMMDD_HHMMSS.parquet` として出力されます。
+- 2D position: `sheep_pos[i]`
+- 2D velocity: `sheep_vel[i]`
+- status label: `Normal`, `A`, or `B`
 
-This section details the Parquet data schema used by the simulation, danger detector, and repair-controller evaluation workflow.
+Normal sheep are affected by:
 
-`logs/data` は危険判定アルゴリズムの検証用データです。修復モードの選択結果は混在させず、別ファイル `logs/control/control_YYYYMMDD_HHMMSS.parquet` に診断ログとして保存します。
-`logs/data` is the dataset for danger-detection validation. Repair-controller decisions are not mixed into this file; they are saved separately as diagnostics in `logs/control/control_YYYYMMDD_HHMMSS.parquet`.
+- cohesion toward the flock center of mass
+- repulsion from the dog when the dog is within sensing range
+- separation from nearby sheep
+- boundary repulsion near the edge of the world
+- max-speed clipping
 
-###  Schema Definition
+### Shepherd Dog
 
-| Column | Type | Description | Example |
-| :--- | :--- | :--- | :--- |
-| **Frame** | `int` | 現在のフレーム番号 (Time step) | `125` |
-| **Agent_Type**| `str` | エージェントの種類 (`Dog` または `Sheep`) | `'Sheep'` |
-| **Agent_ID** | `int` | エージェント固有のID (Dog=0, Sheep=0~19) | `5` |
-| **X** | `float` | X座標 (小数点2桁丸め) | `120.45` |
-| **Y** | `float` | Y座標 (小数点2桁丸め) | `85.32` |
-| **Status** | `str` | エージェントの真の状態・異常ラベル (`Normal`, `A`, `B`, `Dog`)。<br>True identity/status of the agent. | `'A'` |
-| **dist_to_goal**| `float` | 羊群の重心から目標地点までの距離。<br>Distance from flock COM to goal. | `45.67` |
-| **dispersion** | `float` | 羊群の分散度（重心から最も遠い個体の距離）。<br>Flock dispersion radius. | `12.34` |
-| **mean_spread** | `float` | 羊群の平均広がり（重心からの平均距離）。<br>Average flock spread (mean distance from COM). | `8.76` |
-| **is_danger** | `int` | 危険状態フラグ (0: 正常, 1: 危険)。<br>Danger status flag (0: Normal, 1: Danger). | `0` |
+The current model uses one dog. The dog has:
 
-###  Control Diagnostics Schema
+- 2D position: `dog_pos`
+- 2D velocity: `dog_vel`
+- selected control mode: `current_mode`
+- target drive point: `drive_point`
 
-`logs/control/control_YYYYMMDD_HHMMSS.parquet` は修復戦略の評価用ログです。危険判定器の学習・評価用ラベルではありません。
-`logs/control/control_YYYYMMDD_HHMMSS.parquet` is for repair-strategy evaluation. It is not a training/evaluation label source for the danger detector.
+The dog moves toward the current drive point and is clipped by `config.DOG_MAX_SPEED`.
 
-| Column | Type | Description | Example |
-| :--- | :--- | :--- | :--- |
-| **Frame** | `int` | 対応するフレーム番号。<br>Corresponding frame number. | `125` |
-| **repair_enabled** | `int` | 修復介入スイッチ (0: 無効, 1: 有効)。<br>Repair intervention switch (0: disabled, 1: enabled). | `1` |
-| **alarms** | `str` | そのフレームで検出された警報。複数の場合は `;` 区切り、なければ `none`。<br>Detected alarms; semicolon-separated if multiple, `none` if empty. | `stagnation` |
-| **current_mode** | `str` | 牧羊犬が選択した制御モード。<br>Selected shepherd control mode. | `HARD_TO_GUIDE` |
-| **drive_point_x** | `float` | 牧羊犬の目標点 X 座標。<br>X coordinate of the dog drive point. | `120.45` |
-| **drive_point_y** | `float` | 牧羊犬の目標点 Y 座標。<br>Y coordinate of the dog drive point. | `85.32` |
-| **dog_x_before** | `float` | 更新前の犬の X 座標。<br>Dog X coordinate before update. | `110.25` |
-| **dog_y_before** | `float` | 更新前の犬の Y 座標。<br>Dog Y coordinate before update. | `80.10` |
-| **dog_x_after** | `float` | 更新後の犬の X 座標。<br>Dog X coordinate after update. | `111.48` |
-| **dog_y_after** | `float` | 更新後の犬の Y 座標。<br>Dog Y coordinate after update. | `80.96` |
+## Abnormal Sheep
 
-###  Pandas 読み込みサンプル (Python Read Example)
-以下は、エクスポートされた Parquet ファイルを読み込み、特定の羊の軌跡や犬の動きを抽出するサンプルコードです。
+### Type A: Unresponsive
+
+Type A represents sheep that respond weakly to guidance and change direction slowly.
+
+Implementation:
+
+- dog repulsion is reduced by `config.WEIGHT_DOG_REPULSION_A_FACTOR`
+- force response is reduced using `config.INERTIA_FACTOR_A`
+- max speed remains the same as normal sheep
+
+### Type B: Dispersing
+
+Type B represents sheep that are more likely to separate from the flock.
+
+Implementation:
+
+- cohesion is reduced by `config.WEIGHT_COHESION_B_FACTOR`
+- separation strength is increased by `config.WEIGHT_SEPARATION_B_FACTOR`
+- separation sensing radius is increased to `config.SEPARATION_RADIUS_B`
+- dog response and max speed remain the same as normal sheep
+
+## Danger Detector
+
+The detector computes three main metrics:
+
+| Metric | Meaning |
+| :--- | :--- |
+| `dist_to_goal` | Distance from flock center of mass to the goal |
+| `dispersion` | Maximum distance from flock center of mass to any sheep |
+| `mean_spread` | Mean sheep distance from flock center of mass |
+
+It reports two danger types:
+
+| Danger type | Rule |
+| :--- | :--- |
+| `flock_splitting` | `dispersion > DANGER_DISPERSION_THRESHOLD` and `mean_spread > DANGER_MEAN_SPREAD_THRESHOLD` |
+| `stagnation` | over `DANGER_STAGNATION_FRAMES`, progress toward the goal is less than `DANGER_STAGNATION_THRESHOLD` |
+
+Detector output includes:
+
+- `is_danger`
+- `danger_type`
+- short description text
+- alarm list for the controller
+
+## Repair Control Modes
+
+The controller receives an alarm list from the detector:
+
+```text
+[]                         -> no danger
+["stagnation"]             -> flock is not making enough progress
+["flock_splitting"]        -> flock is too dispersed
+```
+
+The environment maps alarms to dog control modes:
+
+| Alarm condition | Selected mode |
+| :--- | :--- |
+| `REPAIR_ENABLED = False` | `TARGET_TRACKING` |
+| `flock_splitting` | `COHESION_PRIORITY` |
+| `stagnation` | `HARD_TO_GUIDE` |
+| no alarm | `TARGET_TRACKING` |
+
+If multiple alarms are introduced in the future, `flock_splitting` currently has higher priority than `stagnation`.
+
+### TARGET_TRACKING
+
+Default mode. If the flock is too dispersed, the dog collects the sheep farthest from the center of mass. Otherwise, the dog moves behind the flock relative to the goal and drives the group forward.
+
+### COHESION_PRIORITY
+
+Repair mode for flock splitting. The dog moves outside the sheep farthest from the flock center to push it back toward the group.
+
+### HARD_TO_GUIDE
+
+Repair mode for stagnation. The dog targets the sheep farthest from the goal and moves behind it relative to the goal direction.
+
+## Fixed Demo Cases
+
+The fixed demo suite is C00-C08 with seed `70`.
+
+| Case | Scenario | A | B | Repair |
+| :--- | :--- | ---: | ---: | :---: |
+| C00 | Normal baseline | 0 | 0 | Off |
+| C01 | Mixed anomaly | 2 | 2 | Off |
+| C02 | Mixed anomaly | 2 | 2 | On |
+| C03 | A-only | 4 | 0 | Off |
+| C04 | A-only | 4 | 0 | On |
+| C05 | B-only | 0 | 4 | Off |
+| C06 | B-only | 0 | 4 | On |
+| C07 | Stress mixed | 3 | 3 | Off |
+| C08 | Stress mixed | 3 | 3 | On |
+
+The existing presentation results are stored in:
+
+- `docs/DEMO_REPORT.md`
+- `docs/experiment_summary.csv`
+
+Representative improvement case:
+
+| Case | A | B | Repair | Success | Frames | Final `dist_to_goal` | Danger Frames |
+| :--- | ---: | ---: | :---: | :---: | ---: | ---: | ---: |
+| C01 | 2 | 2 | Off | No | 2000 | 180.94 | 1234 |
+| C02 | 2 | 2 | On | Yes | 181 | 6.23 | 12 |
+
+Full fixed-seed result summary:
+
+| Case | Scenario | A | B | Repair | Success | Frames | Final Dist | Min Dist | Max Dispersion | Danger Frames |
+| :--- | :--- | ---: | ---: | :---: | :---: | ---: | ---: | ---: | ---: | ---: |
+| C00 | Normal baseline | 0 | 0 | Off | Yes | 145 | 8.84 | 8.84 | 52.45 | 11 |
+| C01 | Mixed anomaly | 2 | 2 | Off | No | 2000 | 180.94 | 1.91 | 55.45 | 1234 |
+| C02 | Mixed anomaly | 2 | 2 | On | Yes | 181 | 6.23 | 1.87 | 52.45 | 12 |
+| C03 | A-only | 4 | 0 | Off | Yes | 184 | 6.60 | 0.32 | 52.45 | 13 |
+| C04 | A-only | 4 | 0 | On | Yes | 462 | 4.51 | 0.45 | 52.45 | 155 |
+| C05 | B-only | 0 | 4 | Off | No | 2000 | 141.16 | 11.21 | 54.31 | 1010 |
+| C06 | B-only | 0 | 4 | On | No | 2000 | 113.32 | 0.87 | 98.91 | 1148 |
+| C07 | Stress mixed | 3 | 3 | Off | No | 2000 | 132.08 | 0.20 | 57.58 | 1120 |
+| C08 | Stress mixed | 3 | 3 | On | No | 2000 | 35.03 | 0.37 | 104.29 | 1016 |
+
+Relevant videos:
+
+- C01 no repair: `logs/videos/animation_20260512_175825.mp4`
+- C02 repair on: `logs/videos/animation_20260512_180028.mp4`
+
+Videos and parquet logs are generated locally and are not committed to the public repository.
+
+## Output Data
+
+Simulation outputs are written under `logs/`.
+
+| Directory | Content |
+| :--- | :--- |
+| `logs/data` | Agent states and detector metrics as parquet files |
+| `logs/control` | Repair-controller diagnostic logs |
+| `logs/visuals` | Trajectory PNG files |
+| `logs/videos` | MP4 animation files |
+| `logs/analysis` | Metric trend charts |
+
+### `logs/data` Schema
+
+| Column | Type | Meaning |
+| :--- | :--- | :--- |
+| `Frame` | int | Simulation frame |
+| `Agent_Type` | str | `Dog` or `Sheep` |
+| `Agent_ID` | int | Agent identifier |
+| `X`, `Y` | float | Agent position |
+| `Status` | str | `Dog`, `Normal`, `A`, or `B` |
+| `dist_to_goal` | float | Distance from flock center of mass to goal |
+| `dispersion` | float | Maximum distance from center of mass to any sheep |
+| `mean_spread` | float | Average distance from center of mass to sheep |
+| `is_danger` | int | 1 if danger is detected, otherwise 0 |
+
+### `logs/control` Schema
+
+| Column | Type | Meaning |
+| :--- | :--- | :--- |
+| `Frame` | int | Simulation frame |
+| `repair_enabled` | int | 1 if repair control is enabled |
+| `alarms` | str | Detected alarms, or `none` |
+| `current_mode` | str | Selected dog control mode |
+| `drive_point_x`, `drive_point_y` | float | Dog target point |
+| `dog_x_before`, `dog_y_before` | float | Dog position before update |
+| `dog_x_after`, `dog_y_after` | float | Dog position after update |
+
+## Reading Logs
 
 ```python
 import pandas as pd
 
-# Parquet ファイルの読み込み
-df = pd.read_parquet("logs/data/data_20231024_153000.parquet")
+df = pd.read_parquet("logs/data/data_20260512_180028.parquet")
 
-# 1. 犬 (Dog) のデータだけを抽出
-dog_data = df[df['Agent_Type'] == 'Dog']
-print("Dog Trajectory:\n", dog_data.head())
+metrics = (
+    df[["Frame", "dist_to_goal", "dispersion", "mean_spread", "is_danger"]]
+    .drop_duplicates()
+    .sort_values("Frame")
+)
 
-# 2. 特定のフレーム (例: Frame 100) の全エージェントの座標を取得
-frame_100 = df[df['Frame'] == 100]
-
-# 3. 羊たちの重心 (Center of Mass) を計算する例
-sheep_data = df[df['Agent_Type'] == 'Sheep']
-com_per_frame = sheep_data.groupby('Frame')[['X', 'Y']].mean()
-print("\nCenter of Mass per Frame:\n", com_per_frame.head())
+print(metrics.tail())
 ```
 
-アルゴリズムの開発、応援しております！何か不明点があればお気軽にお知らせください。
-Good luck with the algorithm development!
+## Current Limitations
 
----
+- The controller switches modes immediately; there is no hysteresis or mode hold time.
+- Repair distances are fixed constants in the environment logic.
+- The model uses one dog even though `config.NUM_DOGS` exists as a parameter.
+- The first demo is based on a fixed seed. Multi-seed evaluation should be added later for statistical validation.
+- The close-range dog-sheep repulsion model is simplified.
 
-## 修復効果のテスト例 (Repair Effect Test Cases)
+## Attribution
 
-以下は `RANDOM_SEED = 70` で実行した代表的な比較例です。詳細な実験計画と全ケースの結果は `project_docs/EXPERIMENT_CASES.md` および `project_docs/presentation/DEMO_REPORT.md` を参照してください。
+This project was developed as a research demo related to the CSS Laboratory, Hiroshima University.
 
-The following pair is a representative comparison using `RANDOM_SEED = 70`. See `project_docs/EXPERIMENT_CASES.md` and `project_docs/presentation/DEMO_REPORT.md` for the full case matrix and report.
+- CSS Lab: https://csslab.jp/
 
-| Case | Abnormal A | Abnormal B | `REPAIR_ENABLED` | Success | Frames | Final `dist_to_goal` | Danger Frames |
-| :--- | ---: | ---: | :---: | :---: | ---: | ---: | ---: |
-| C01 | 2 | 2 | `False` | No | 2000 | 180.94 | 1234 |
-| C02 | 2 | 2 | `True` | Yes | 181 | 6.23 | 12 |
+## License
 
-この例では、修復介入なしでは混合異常シナリオが 2000 フレーム以内に収束しませんでした。一方、修復介入ありでは警報に基づいて `COHESION_PRIORITY` が短時間発動し、181 フレームで目標到達しました。
+This project is released under the MIT License. See `LICENSE` for details.
 
-In this example, the mixed abnormal scenario does not converge within 2000 frames without repair. With repair enabled, the controller briefly activates `COHESION_PRIORITY` based on alarms and reaches the goal in 181 frames.
+## Suggested Meeting Demo
 
-関連ファイル:
+For a short meeting, show:
 
-- No repair video: `logs/videos/animation_20260512_175825.mp4`
-- Repair-on video: `logs/videos/animation_20260512_180028.mp4`
-- Summary table: `project_docs/presentation/experiment_summary.csv`
-
----
-
-## 開発者向けノート (Developer Notes)
-
-このプロジェクトは、仮想的な「環境構築」「危険判定」「修復制御」を1つの実験パイプラインとして統合しています。
-The project integrates environment simulation, danger detection, and repair control into a single experiment pipeline.
-
-### 危険判定データ (Danger Detection Data)
-
-- **データ取得とアノテーション (Data Acquisition & Ground Truth)**:
-  エクスポートされる `.parquet` ログファイルには、すでに `Status` 列 (`'Normal'`, `'A'`, `'B'`) が含まれています。アルゴリズムの学習および評価フェーズにおいて、この列を**正解ラベル (Ground Truth)** として利用し、検出アルゴリズムの精度を検証してください。
-  *The exported `.parquet` log files already contain the `Status` column. Use this column as the Ground Truth during the training and evaluation phases of your algorithm.*
-- **環境コントロール (Environment Control)**:
-  開発・テストフェーズにおいて、異なる異常個体比率のデータセットを生成したい場合は、`config.py` 内の `NUM_ABNORMAL_A` および `NUM_ABNORMAL_B` の数値を変更してシミュレーションを実行してください。
-  *To generate datasets with different anomaly ratios, modify `NUM_ABNORMAL_A` and `NUM_ABNORMAL_B` in `config.py`.*
-
-### 修復制御インターフェース (Repair Control Interface)
-
-- **API 詳細 (API Details)**:
-  `environment.py` 内の `SwarmEnv` クラスには、介入用 API として `repair_sheep(indices)` が実装されています。このメソッドは非常に柔軟に設計されており、対象となる羊の単一の整数 ID、ID のリスト、または NumPy 配列のいずれの形式でも引数として受け付けることができます。
-  *The `repair_sheep(indices)` API is extremely flexible and accepts a single integer ID, a list of IDs, or a NumPy array.*
-
-- **メインループ統合サンプル (Integration Example)**:
-  危険判定と修復制御は `main.py` のループ内で接続されています。
-  Danger detection and repair control are connected in the `main.py` loop.
-
-  ```python
-  while step_count < config.MAX_STEPS:
-      alarms, metrics, report = detector.detect(env.sheep_pos, env.goal_pos)
-      reached_goal = env.step(alarms)
-      
-      vis.render(env)
-      # ...
-  ```
+1. `README.md`: model, abnormal sheep, detector, and control modes.
+2. C00 video or trajectory: normal baseline succeeds.
+3. C01 vs C02 videos: no-repair failure versus repair success.
+4. C06 or C08: limitation case where repair helps partially or fails.
+5. `run_experiments.py`: the C00-C08 suite can be reproduced with one command.
