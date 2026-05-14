@@ -207,7 +207,7 @@ The fixed demo suite is C00-C08 with seed `70`.
 | C07 | Stress mixed | 3 | 3 | Off |
 | C08 | Stress mixed | 3 | 3 | On |
 
-The existing presentation results are stored in:
+Reference fixed-seed results are stored in:
 
 - `docs/DEMO_REPORT.md`
 - `docs/experiment_summary.csv`
@@ -233,12 +233,7 @@ Full fixed-seed result summary:
 | C07 | Stress mixed | 3 | 3 | Off | No | 2000 | 132.08 | 0.20 | 57.58 | 1120 |
 | C08 | Stress mixed | 3 | 3 | On | No | 2000 | 35.03 | 0.37 | 104.29 | 1016 |
 
-Relevant videos:
-
-- C01 no repair: `logs/videos/animation_20260512_175825.mp4`
-- C02 repair on: `logs/videos/animation_20260512_180028.mp4`
-
-Videos and parquet logs are generated locally and are not committed to the public repository.
+Videos and parquet logs are generated locally under `logs/` and are not committed to the public repository.
 
 ## Output Data
 
@@ -281,9 +276,12 @@ Simulation outputs are written under `logs/`.
 ## Reading Logs
 
 ```python
+from pathlib import Path
+
 import pandas as pd
 
-df = pd.read_parquet("logs/data/data_20260512_180028.parquet")
+latest_log = max(Path("logs/data").glob("data_*.parquet"), key=lambda p: p.stat().st_mtime)
+df = pd.read_parquet(latest_log)
 
 metrics = (
     df[["Frame", "dist_to_goal", "dispersion", "mean_spread", "is_danger"]]
@@ -311,13 +309,3 @@ This project was developed as a research demo related to the CSS Laboratory, Hir
 ## License
 
 This project is released under the MIT License. See `LICENSE` for details.
-
-## Suggested Meeting Demo
-
-For a short meeting, show:
-
-1. `README.md`: model, abnormal sheep, detector, and control modes.
-2. C00 video or trajectory: normal baseline succeeds.
-3. C01 vs C02 videos: no-repair failure versus repair success.
-4. C06 or C08: limitation case where repair helps partially or fails.
-5. `run_experiments.py`: the C00-C08 suite can be reproduced with one command.
