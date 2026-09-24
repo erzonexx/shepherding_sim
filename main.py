@@ -1,3 +1,5 @@
+import argparse
+import time
 from environment import SwarmEnv
 from visualizer import Visualizer
 from detector import Detector
@@ -5,11 +7,28 @@ from plot_analysis import plot_metrics_from_files
 import config
 from datetime import datetime
 import os
+from high_level_controller import build_controller
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run one shepherding simulation.")
+    parser.add_argument(
+        "--controller",
+        choices=("rule", "mock-llm", "openai", "deepseek"),
+        default=config.CONTROLLER_KIND,
+        help="Control architecture. API providers use asynchronous Responses calls.",
+    )
+    return parser.parse_args()
+
 
 def main():
-    mode_msg = "Fixed Mode (Seed 42)" if config.USE_FIXED_SEED else "Random Mode"
-    print(f"Initializing simulation environment... ({mode_msg})")
-    env = SwarmEnv()
+    args = parse_args()
+    mode_msg = f"Fixed Mode (Seed {config.RANDOM_SEED})" if config.USE_FIXED_SEED else "Random Mode"
+    print(f"Initializing simulation environment... ({mode_msg}, controller={args.controller})")
+    try:
+        controller = build_controller(args.controller)
+    except RuntimeError as exc:
+        raise SystemExit(f"Controller setup failed: {exc}") from None
+    env = SwarmEnv(controller=controller)
     detector = Detector(dispersion_threshold=config.DANGER_DISPERSION_THRESHOLD,
                           mean_spread_threshold=config.DANGER_MEAN_SPREAD_THRESHOLD,
                           stagnation_frames=config.DANGER_STAGNATION_FRAMES,
@@ -33,6 +52,11 @@ def main():
         
         # 3. refresh the screen
         vis.render(env)
+        if (
+            args.controller in ("openai", "deepseek")
+            and getattr(env.controller, "pending_request", None) is not None
+        ):
+            time.sleep(config.LLM_PENDING_POLL_SECONDS)
 
         # 4. check if the mission is successful
         if reached_goal:
@@ -62,6 +86,7 @@ def main():
 
     print("✅ Data successfully saved.")
 
+    env.close()
     vis.close()
 
 if __name__ == "__main__":

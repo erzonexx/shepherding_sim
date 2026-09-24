@@ -1,311 +1,234 @@
-# Swarm Shepherding Simulation
+# Dual-Layer Autonomous Swarm Shepherding
 
-A 2D multi-agent shepherding simulation for the first-month minimum demo loop:
+A two-dimensional simulation of one shepherd agent guiding a heterogeneous flock
+to a circular goal. The project combines a continuous kinematic controller with
+an optional event-triggered LLM layer for anomaly recovery.
 
-1. A normal flock can be guided to a target region.
-2. Abnormal sheep can create difficult or failed control cases.
-3. A simple rule-based danger detector can trigger repair modes.
-4. Repair can improve at least one abnormal scenario while still leaving clear limitation cases.
+The implementation focuses on two abnormal sheep types:
 
-The current project is intentionally lightweight. It is not intended to be a final optimized shepherding algorithm.
+- **Type A (weak response):** weak dog repulsion and high inertia.
+- **Type B (dispersing):** weak cohesion and stronger, longer-range separation.
 
-## Project Structure
+The low-level controller remains active every frame. The high-level layer is
+consulted only when stagnation and flock splitting are detected together, so API
+latency never pauses the simulation.
+
+## Architecture
+
+```text
+sheep/dog state
+      |
+      v
+   Detector ------------------------------+
+      | alarms                            |
+      v                                   |
+HighLevelController (optional, async)     |
+      | bounded repair mode               |
+      v                                   |
+LowLevelController <--- forecast + guard -+
+      |
+      v
+Kinematic dynamics -> next state
+```
+
+The controller has three admissible modes:
+
+| Mode | Purpose | Typical action |
+| --- | --- | --- |
+| `TARGET_TRACKING` | Normal goal-directed shepherding | Drive or collect |
+| `HARD_TO_GUIDE` | Recover from stagnation | Guide one difficult sheep |
+| `COHESION_PRIORITY` | Recover a split flock | Collect the predicted outlier |
+
+The rule controller maps splitting to `COHESION_PRIORITY`, stagnation to
+`HARD_TO_GUIDE`, and no alarm to `TARGET_TRACKING`. When both alarms coexist,
+the LLM may choose a repair mode from the same bounded set.
+
+## Project Layout
 
 ```text
 shepherding_sim/
-|-- main.py                 # Single-run simulation entry point
-|-- run_experiments.py      # Fixed C00-C08 demo experiment runner
-|-- config.py               # Tunable parameters and output settings
-|-- environment.py          # Core environment, physics, agents, control modes
-|-- detector.py             # Flock metrics and danger detection rules
-|-- visualizer.py           # Live rendering, trajectory PNG, animation MP4
-|-- plot_analysis.py        # Metric plotting from parquet logs
-|-- docs/
-|   |-- DEMO_REPORT.md
-|   |-- experiment_summary.csv
-|-- logs/                   # Auto-generated local outputs
+|-- main.py                    interactive simulation
+|-- run_experiments.py         reproducible C00-C08 experiment suite
+|-- config.py                  simulation and controller parameters
+|-- environment.py             state lifecycle and logging
+|-- dynamics.py                sheep and shepherd kinematics
+|-- detector.py                splitting and stagnation monitors
+|-- control_types.py           controller input/output contracts
+|-- low_level_controller.py    frame-by-frame vector controller
+|-- high_level_controller.py   async LLM policy, forecast, and guard
+|-- mode_forecast.py           short-horizon candidate evaluation
+|-- responses_api_backend.py   OpenAI-compatible API adapters
+|-- visualizer.py              live view, trajectory, and video output
+|-- plot_analysis.py           metric plots
+|-- tools/                     diagnostic and comparison utilities
+|-- tests/                     unit and integration tests
+|-- logs/                      generated output (ignored by Git)
+`-- local_artifacts/           local archives (ignored by Git)
 ```
 
-## Quick Start
+## Installation
 
-Install dependencies:
+Python 3.10 or newer is recommended.
 
-```bash
-pip install -r requirements.txt
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-MP4 export requires `ffmpeg` to be installed and available on `PATH`.
+Run one visual simulation:
 
-Run one simulation using the current `config.py`:
-
-```bash
-python main.py
+```powershell
+python main.py --controller rule
 ```
 
-Run the fixed C00-C08 demo suite:
+Available controllers are `rule`, `mock-llm`, `openai`, and `deepseek`.
 
-```bash
-python run_experiments.py
+## Experiments
+
+Run all nine predefined cases with seed 70:
+
+```powershell
+python run_experiments.py --seed 70
 ```
 
-Save trajectory PNGs for the demo suite:
+Run selected cases and several seeds:
 
-```bash
-python run_experiments.py --visuals
+```powershell
+python run_experiments.py --cases C02 C08 --seeds 141 142 143 --controller rule
 ```
 
-Save both trajectory PNGs and MP4 animations:
+Add `--visuals`, `--video`, or `--analysis` only when those outputs are needed.
+The summary is written to `logs/experiment_summary.csv` by default. Each summary
+also has metadata containing the configuration and source hashes.
 
-```bash
-python run_experiments.py --visuals --video
+### Experiment Matrix
+
+| Case | Type A | Type B | Rule repair | Purpose |
+| --- | ---: | ---: | --- | --- |
+| C00 | 0 | 0 | Off | Normal baseline |
+| C01 | 2 | 2 | Off | Mixed anomaly baseline |
+| C02 | 2 | 2 | On | Mixed anomaly recovery |
+| C03 | 4 | 0 | Off | Type A baseline |
+| C04 | 4 | 0 | On | Type A recovery |
+| C05 | 0 | 4 | Off | Type B baseline |
+| C06 | 0 | 4 | On | Type B recovery |
+| C07 | 3 | 3 | Off | Mixed stress baseline |
+| C08 | 3 | 3 | On | Mixed stress recovery |
+
+## LLM Layer
+
+The LLM receives a structured state summary rather than raw trajectories. Its
+response must select one admissible mode and a bounded hold time. The simulation
+continues under rule control while the request is pending.
+
+Before execution, a response is rejected when it is malformed, stale, outside
+the allowed mode set, or worse than the rule candidate in the short-horizon
+forecast. A minimum dwell period and bounded hold duration reduce rapid mode
+switching. API responses may be cached for reproducibility.
+
+### DeepSeek
+
+Set the API key in the current PowerShell session, then start the experiment:
+
+```powershell
+$env:DEEPSEEK_API_KEY = "your-key"
+python run_experiments.py --cases C08 --seeds 141 142 --controller deepseek
 ```
 
-The experiment runner temporarily changes `config` values in memory for each case. It does not rewrite `config.py`.
+Optional environment variables are `DEEPSEEK_MODEL` and `DEEPSEEK_BASE_URL`.
+Use `--no-llm-cache` only when fresh provider calls are required. Never place an
+API key in source files or commit it to Git.
 
-## Model Overview
+OpenAI uses the corresponding `OPENAI_API_KEY`, `OPENAI_MODEL`, and
+`OPENAI_BASE_URL` variables.
 
-The simulation combines two standard ideas:
+## Detection and Control
 
-- Boids-style flocking: sheep move according to cohesion, separation, boundary avoidance, and repulsion from the shepherd dog.
-- Shepherding control inspired by Strombom-style driving and collecting: the dog either drives the flock toward the goal or moves outside the most distant sheep to collect it back into the flock.
-
-This model was chosen because it gives a visible 2D system, clear state variables, simple control inputs, and interpretable failure cases.
-
-## World
-
-| Item | Implementation |
-| :--- | :--- |
-| Space | Square 2D plane, size `config.SPACE_SIZE` |
-| Goal | Random position sampled with the fixed seed |
-| Goal region | Circle with radius `config.GOAL_RADIUS` |
-| Success condition | All sheep are within `GOAL_RADIUS` of the goal |
-| Time horizon | `config.MAX_STEPS` frames |
-| Seed | `config.RANDOM_SEED` when `config.USE_FIXED_SEED = True` |
-
-## Agents
-
-### Sheep
-
-Each sheep has:
-
-- 2D position: `sheep_pos[i]`
-- 2D velocity: `sheep_vel[i]`
-- status label: `Normal`, `A`, or `B`
-
-Normal sheep are affected by:
-
-- cohesion toward the flock center of mass
-- repulsion from the dog when the dog is within sensing range
-- separation from nearby sheep
-- boundary repulsion near the edge of the world
-- max-speed clipping
-
-### Shepherd Dog
-
-The current model uses one dog. The dog has:
-
-- 2D position: `dog_pos`
-- 2D velocity: `dog_vel`
-- selected control mode: `current_mode`
-- target drive point: `drive_point`
-
-The dog moves toward the current drive point and is clipped by `config.DOG_MAX_SPEED`.
-
-## Abnormal Sheep
-
-### Type A: Unresponsive
-
-Type A represents sheep that respond weakly to guidance and change direction slowly.
-
-Implementation:
-
-- dog repulsion is reduced by `config.WEIGHT_DOG_REPULSION_A_FACTOR`
-- force response is reduced using `config.INERTIA_FACTOR_A`
-- max speed remains the same as normal sheep
-
-### Type B: Dispersing
-
-Type B represents sheep that are more likely to separate from the flock.
-
-Implementation:
-
-- cohesion is reduced by `config.WEIGHT_COHESION_B_FACTOR`
-- separation strength is increased by `config.WEIGHT_SEPARATION_B_FACTOR`
-- separation sensing radius is increased to `config.SEPARATION_RADIUS_B`
-- dog response and max speed remain the same as normal sheep
-
-## Danger Detector
-
-The detector computes three main metrics:
-
-| Metric | Meaning |
-| :--- | :--- |
-| `dist_to_goal` | Distance from flock center of mass to the goal |
-| `dispersion` | Maximum distance from flock center of mass to any sheep |
-| `mean_spread` | Mean sheep distance from flock center of mass |
-
-It reports two danger types:
-
-| Danger type | Rule |
-| :--- | :--- |
-| `flock_splitting` | `dispersion > DANGER_DISPERSION_THRESHOLD` and `mean_spread > DANGER_MEAN_SPREAD_THRESHOLD` |
-| `stagnation` | over `DANGER_STAGNATION_FRAMES`, progress toward the goal is less than `DANGER_STAGNATION_THRESHOLD` |
-
-Detector output includes:
-
-- `is_danger`
-- `danger_type`
-- short description text
-- alarm list for the controller
-
-## Repair Control Modes
-
-The controller receives an alarm list from the detector:
+Flock splitting is reported when both conditions hold:
 
 ```text
-[]                         -> no danger
-["stagnation"]             -> flock is not making enough progress
-["flock_splitting"]        -> flock is too dispersed
+maximum distance from flock centroid > 40
+mean distance from flock centroid    > 15
 ```
 
-The environment maps alarms to dog control modes:
+Stagnation is reported when centroid progress toward the goal is less than
+`1.0` over a 150-frame window.
 
-| Alarm condition | Selected mode |
-| :--- | :--- |
-| `REPAIR_ENABLED = False` | `TARGET_TRACKING` |
-| `flock_splitting` | `COHESION_PRIORITY` |
-| `stagnation` | `HARD_TO_GUIDE` |
-| no alarm | `TARGET_TRACKING` |
+Repair target selection uses a short velocity lookahead. A target is held for a
+minimum period and changed only when another eligible sheep is meaningfully more
+urgent. Sheep already inside the goal are deprioritized when an outside target
+exists. A light goal-retention force reduces outward drift near the goal edge.
 
-If multiple alarms are introduced in the future, `flock_splitting` currently has higher priority than `stagnation`.
+## Main Parameters
 
-### TARGET_TRACKING
+| Group | Important settings |
+| --- | --- |
+| Simulation | `MAX_STEPS`, `RANDOM_SEED`, `SPACE_SIZE`, `GOAL_RADIUS` |
+| Population | `NUM_SHEEP`, `NUM_ABNORMAL_A`, `NUM_ABNORMAL_B` |
+| Speed | `SHEEP_MAX_SPEED`, `DOG_MAX_SPEED` |
+| Flocking | `WEIGHT_COHESION`, `WEIGHT_SEPARATION`, `WEIGHT_BOUNDARY` |
+| Shepherd response | `WEIGHT_DOG_REPULSION`, `DOG_SENSING_RANGE` |
+| Type A | `WEIGHT_DOG_REPULSION_A_FACTOR`, `INERTIA_FACTOR_A` |
+| Type B | `WEIGHT_COHESION_B_FACTOR`, `WEIGHT_SEPARATION_B_FACTOR` |
+| Detection | `DANGER_DISPERSION_THRESHOLD`, `DANGER_MEAN_SPREAD_THRESHOLD`, `DANGER_STAGNATION_*` |
+| Repair geometry | `DOG_DRIVE_DISTANCE`, `HARD_TO_GUIDE_DISTANCE`, `COHESION_REPAIR_DISTANCE` |
+| Target stability | `*_TARGET_MIN_HOLD_FRAMES`, `REPAIR_TARGET_SWITCH_MARGIN`, `REPAIR_TARGET_LOOKAHEAD_FRAMES` |
+| High level | `HIGH_LEVEL_*`, `LLM_API_TIMEOUT_SECONDS`, `LLM_CACHE_ENABLED` |
 
-Default mode. If the flock is too dispersed, the dog collects the sheep farthest from the center of mass. Otherwise, the dog moves behind the flock relative to the goal and drives the group forward.
+Change one parameter family at a time and compare identical seeds. A visually
+desirable single trajectory is not enough to justify a parameter change.
 
-### COHESION_PRIORITY
+## Diagnostics
 
-Repair mode for flock splitting. The dog moves outside the sheep farthest from the flock center to push it back toward the group.
+Run a detailed rule-controller diagnostic:
 
-### HARD_TO_GUIDE
-
-Repair mode for stagnation. The dog targets the sheep farthest from the goal and moves behind it relative to the goal direction.
-
-## Fixed Demo Cases
-
-The fixed demo suite is C00-C08 with seed `70`.
-
-| Case | Scenario | A | B | Repair |
-| :--- | :--- | ---: | ---: | :---: |
-| C00 | Normal baseline | 0 | 0 | Off |
-| C01 | Mixed anomaly | 2 | 2 | Off |
-| C02 | Mixed anomaly | 2 | 2 | On |
-| C03 | A-only | 4 | 0 | Off |
-| C04 | A-only | 4 | 0 | On |
-| C05 | B-only | 0 | 4 | Off |
-| C06 | B-only | 0 | 4 | On |
-| C07 | Stress mixed | 3 | 3 | Off |
-| C08 | Stress mixed | 3 | 3 | On |
-
-Reference fixed-seed results are stored in:
-
-- `docs/DEMO_REPORT.md`
-- `docs/experiment_summary.csv`
-
-Representative improvement case:
-
-| Case | A | B | Repair | Success | Frames | Final `dist_to_goal` | Danger Frames |
-| :--- | ---: | ---: | :---: | :---: | ---: | ---: | ---: |
-| C01 | 2 | 2 | Off | No | 2000 | 180.94 | 1234 |
-| C02 | 2 | 2 | On | Yes | 181 | 6.23 | 12 |
-
-Full fixed-seed result summary:
-
-| Case | Scenario | A | B | Repair | Success | Frames | Final Dist | Min Dist | Max Dispersion | Danger Frames |
-| :--- | :--- | ---: | ---: | :---: | :---: | ---: | ---: | ---: | ---: | ---: |
-| C00 | Normal baseline | 0 | 0 | Off | Yes | 145 | 8.84 | 8.84 | 52.45 | 11 |
-| C01 | Mixed anomaly | 2 | 2 | Off | No | 2000 | 180.94 | 1.91 | 55.45 | 1234 |
-| C02 | Mixed anomaly | 2 | 2 | On | Yes | 181 | 6.23 | 1.87 | 52.45 | 12 |
-| C03 | A-only | 4 | 0 | Off | Yes | 184 | 6.60 | 0.32 | 52.45 | 13 |
-| C04 | A-only | 4 | 0 | On | Yes | 462 | 4.51 | 0.45 | 52.45 | 155 |
-| C05 | B-only | 0 | 4 | Off | No | 2000 | 141.16 | 11.21 | 54.31 | 1010 |
-| C06 | B-only | 0 | 4 | On | No | 2000 | 113.32 | 0.87 | 98.91 | 1148 |
-| C07 | Stress mixed | 3 | 3 | Off | No | 2000 | 132.08 | 0.20 | 57.58 | 1120 |
-| C08 | Stress mixed | 3 | 3 | On | No | 2000 | 35.03 | 0.37 | 104.29 | 1016 |
-
-Videos and parquet logs are generated locally under `logs/` and are not committed to the public repository.
-
-## Output Data
-
-Simulation outputs are written under `logs/`.
-
-| Directory | Content |
-| :--- | :--- |
-| `logs/data` | Agent states and detector metrics as parquet files |
-| `logs/control` | Repair-controller diagnostic logs |
-| `logs/visuals` | Trajectory PNG files |
-| `logs/videos` | MP4 animation files |
-| `logs/analysis` | Metric trend charts |
-
-### `logs/data` Schema
-
-| Column | Type | Meaning |
-| :--- | :--- | :--- |
-| `Frame` | int | Simulation frame |
-| `Agent_Type` | str | `Dog` or `Sheep` |
-| `Agent_ID` | int | Agent identifier |
-| `X`, `Y` | float | Agent position |
-| `Status` | str | `Dog`, `Normal`, `A`, or `B` |
-| `dist_to_goal` | float | Distance from flock center of mass to goal |
-| `dispersion` | float | Maximum distance from center of mass to any sheep |
-| `mean_spread` | float | Average distance from center of mass to sheep |
-| `is_danger` | int | 1 if danger is detected, otherwise 0 |
-
-### `logs/control` Schema
-
-| Column | Type | Meaning |
-| :--- | :--- | :--- |
-| `Frame` | int | Simulation frame |
-| `repair_enabled` | int | 1 if repair control is enabled |
-| `alarms` | str | Detected alarms, or `none` |
-| `current_mode` | str | Selected dog control mode |
-| `drive_point_x`, `drive_point_y` | float | Dog target point |
-| `dog_x_before`, `dog_y_before` | float | Dog position before update |
-| `dog_x_after`, `dog_y_after` | float | Dog position after update |
-
-## Reading Logs
-
-```python
-from pathlib import Path
-
-import pandas as pd
-
-latest_log = max(Path("logs/data").glob("data_*.parquet"), key=lambda p: p.stat().st_mtime)
-df = pd.read_parquet(latest_log)
-
-metrics = (
-    df[["Frame", "dist_to_goal", "dispersion", "mean_spread", "is_danger"]]
-    .drop_duplicates()
-    .sort_values("Frame")
-)
-
-print(metrics.tail())
+```powershell
+python tools\diagnose_failures.py --cases C08 --seeds 70
 ```
 
-## Current Limitations
+Compare legacy and predictive repair-target selection:
 
-- The controller switches modes immediately; there is no hysteresis or mode hold time.
-- Repair distances are fixed constants in the environment logic.
-- The model uses one dog even though `config.NUM_DOGS` exists as a parameter.
-- The first demo is based on a fixed seed. Multi-seed evaluation should be added later for statistical validation.
-- The close-range dog-sheep repulsion model is simplified.
+```powershell
+python tools\diagnose_failures.py --cases C02 C04 C06 C08 --seeds 61 62 63 --compare-repair-targeting --summary-only
+```
 
-## Attribution
+Compare two experiment summary files:
 
-This project was developed as a research demo related to the CSS Laboratory, Hiroshima University.
+```powershell
+python tools\analyze_experiment_pair.py baseline.csv candidate.csv --output-prefix logs\paired_comparison
+```
 
-- CSS Lab: https://csslab.jp/
+## Tests
+
+```powershell
+python -m unittest discover -s tests -q
+```
+
+## Current Evidence
+
+These results describe completed local experiments; they are not universal
+performance claims.
+
+- In 80 paired rule-controller runs, predictive target selection improved task
+  success from 57 to 61 runs with no aggregate success loss in any scenario.
+- In a 10-seed C08 comparison (seeds 141-150), the rule controller succeeded in
+  6 runs and the DeepSeek controller in 8. Mean capped completion frames changed
+  from 1142.9 to 951.0; danger frames from 423.2 to 335.6; maximum dispersion
+  from 76.19 to 73.16.
+- The LLM comparison used 33 requests, 30 responses, 13 accepted decisions, and
+  17 rejected decisions, with mean response latency of about 1.20 seconds.
+- The sample is small and paired significance was not below 0.05. Repeating one
+  seed also showed provider nondeterminism.
+
+## Limitations
+
+- The model is a 2D kinematic simulation, not a physical robot controller.
+- Only two anomaly types and one shepherd are currently modeled.
+- LLM results depend on provider latency and nondeterministic responses.
+- More seeds, ablations, and statistical analysis are required before making
+  strong comparative claims.
 
 ## License
 
-This project is released under the MIT License. See `LICENSE` for details.
+See `LICENSE`.

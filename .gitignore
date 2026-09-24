@@ -1,8 +1,15 @@
 # Simulation logs
 logs/
 
-# Local experiment notes and presentation materials
+# Local reports, posters, and generated presentation work
+local_artifacts/
+docs/
 project_docs/
+.codex_tmp/
+
+# Local API credentials
+.env
+.env.*
 
 # Python cache files
 __pycache__/

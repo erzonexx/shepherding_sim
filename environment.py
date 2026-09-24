@@ -2,10 +2,14 @@ import numpy as np
 import config
 import pandas as pd
 import os
+import json
+from control_types import ControlObservation
+from dynamics import advance_dog, advance_sheep
+from low_level_controller import LowLevelController
 from datetime import datetime
 
 class SwarmEnv:
-    def __init__(self):
+    def __init__(self, controller=None):
         if config.USE_FIXED_SEED:
             np.random.seed(config.RANDOM_SEED)
             
@@ -37,6 +41,13 @@ class SwarmEnv:
         self.control_data = []
         self.current_mode = "TARGET_TRACKING"
         self.drive_point = np.copy(self.dog_pos)
+        self.target_sheep_id = None
+        self.control_action = None
+        self.navigation_point = np.copy(self.dog_pos)
+        self.controller = controller if controller is not None else LowLevelController()
+        self.decision_source = "rule"
+        self.decision_frame = None
+        self.decision_metadata = {}
 
     def _record_state(self):
         # Record Dog's state
@@ -58,6 +69,55 @@ class SwarmEnv:
             'repair_enabled': int(config.REPAIR_ENABLED),
             'alarms': alarm_text,
             'current_mode': current_mode,
+            'decision_source': getattr(self, 'decision_source', 'rule'),
+            'decision_frame': getattr(self, 'decision_frame', frame),
+            'high_level_status': self.decision_metadata.get('high_level_status'),
+            'llm_request_id': self.decision_metadata.get('request_id'),
+            'llm_trigger_frame': self.decision_metadata.get('trigger_frame'),
+            'llm_trigger_alarm': self.decision_metadata.get('trigger_alarm'),
+            'llm_trigger_alarms': json.dumps(
+                self.decision_metadata.get('trigger_alarms'), sort_keys=True
+            ),
+            'llm_state_summary': json.dumps(
+                self.decision_metadata.get('state_summary'), sort_keys=True
+            ),
+            'llm_selected_mode': self.decision_metadata.get('selected_mode'),
+            'llm_reference_mode': self.decision_metadata.get('reference_mode'),
+            'llm_selection_correct': self.decision_metadata.get('selection_correct'),
+            'llm_latency_frames': self.decision_metadata.get('latency_frames'),
+            'llm_latency_seconds': self.decision_metadata.get('latency_seconds'),
+            'llm_hold_frames': self.decision_metadata.get('hold_frames'),
+            'llm_response_mode': self.decision_metadata.get('response_mode'),
+            'llm_response_hold_frames': self.decision_metadata.get(
+                'response_hold_frames'
+            ),
+            'llm_reason': self.decision_metadata.get('reason'),
+            'llm_model': self.decision_metadata.get('model'),
+            'llm_prompt_version': self.decision_metadata.get('prompt_version'),
+            'llm_cache_hit': self.decision_metadata.get('cache_hit'),
+            'llm_response_id': self.decision_metadata.get('response_id'),
+            'llm_response_status': self.decision_metadata.get('response_status'),
+            'llm_incomplete_reason': self.decision_metadata.get('incomplete_reason'),
+            'llm_input_tokens': self.decision_metadata.get('input_tokens'),
+            'llm_output_tokens': self.decision_metadata.get('output_tokens'),
+            'llm_backend_error': self.decision_metadata.get('backend_error'),
+            'llm_rejection_reason': self.decision_metadata.get('rejection_reason'),
+            'llm_release_reason': self.decision_metadata.get('release_reason'),
+            'llm_released_request_id': self.decision_metadata.get(
+                'released_request_id'
+            ),
+            'llm_released_mode': self.decision_metadata.get('released_mode'),
+            'llm_released_active_frames': self.decision_metadata.get(
+                'released_active_frames'
+            ),
+            'decision_metadata': json.dumps(
+                self.decision_metadata, sort_keys=True, default=str
+            ),
+            'control_action': self.control_action,
+            'target_sheep_id': self.target_sheep_id,
+            'goal_retention_enabled': int(config.GOAL_RETENTION_ENABLED),
+            'navigation_point_x': float(self.navigation_point[0]),
+            'navigation_point_y': float(self.navigation_point[1]),
             'drive_point_x': round(float(drive_point[0]), 2),
             'drive_point_y': round(float(drive_point[1]), 2),
             'dog_x_before': round(float(dog_pos_before[0]), 2),
@@ -137,116 +197,61 @@ class SwarmEnv:
         if np.all(distances_to_goal < config.GOAL_RADIUS):
             return True
 
-        # --- shepherd mode decision ---
-        if not config.REPAIR_ENABLED:
-            current_mode = "TARGET_TRACKING"
-        elif "flock_splitting" in alarms:
-            current_mode = "COHESION_PRIORITY"
-        elif "stagnation" in alarms:
-            current_mode = "HARD_TO_GUIDE"
-        else:
-            current_mode = "TARGET_TRACKING"
-        self.current_mode = current_mode
+        sheep_snapshot = np.copy(self.sheep_pos)
+        sheep_velocity_snapshot = np.copy(self.sheep_vel)
+        dog_snapshot = np.copy(self.dog_pos)
+        dog_velocity_snapshot = np.copy(self.dog_vel)
+        goal_snapshot = np.copy(self.goal_pos)
+        for snapshot in (
+            sheep_snapshot,
+            sheep_velocity_snapshot,
+            dog_snapshot,
+            dog_velocity_snapshot,
+            goal_snapshot,
+        ):
+            snapshot.flags.writeable = False
+        observation = ControlObservation(
+            sheep_positions=sheep_snapshot,
+            dog_position=dog_snapshot,
+            goal_position=goal_snapshot,
+            alarms=tuple(alarms),
+            frame=frame,
+            sheep_statuses=tuple(self.sheep_status.tolist()),
+            current_mode=self.current_mode,
+            sheep_velocities=sheep_velocity_snapshot,
+            dog_velocity=dog_velocity_snapshot,
+        )
+        decision = self.controller.decide(observation)
+        self._apply_control_decision(decision)
 
-        # --- shepherd drive-point calculation ---
-        vecs_to_com = self.sheep_pos - com
-        dists_to_com = np.linalg.norm(vecs_to_com, axis=1)
-        max_dist_to_com = np.max(dists_to_com)
-
-        if current_mode == "TARGET_TRACKING":
-            if max_dist_to_com > config.COHESION_THRESHOLD:
-                furthest_idx = np.argmax(dists_to_com)
-                furthest_pos = self.sheep_pos[furthest_idx]
-                dir_from_com = vecs_to_com[furthest_idx] / (max_dist_to_com + config.EPSILON)
-                drive_point = furthest_pos + dir_from_com * config.DOG_DRIVE_DISTANCE
-            else:
-                dir_to_goal = to_goal / (dist_to_goal + config.EPSILON)
-                drive_point = com - dir_to_goal * config.DOG_DRIVE_DISTANCE
-        elif current_mode == "HARD_TO_GUIDE":
-            distances_to_goal = np.linalg.norm(self.sheep_pos - self.goal_pos, axis=1)
-            target_idx = np.argmax(distances_to_goal)
-            target_pos = self.sheep_pos[target_idx]
-            dir_to_goal = (self.goal_pos - target_pos) / (distances_to_goal[target_idx] + config.EPSILON)
-            drive_point = target_pos - dir_to_goal * 3.0
-        elif current_mode == "COHESION_PRIORITY":
-            furthest_idx = np.argmax(dists_to_com)
-            furthest_pos = self.sheep_pos[furthest_idx]
-            dir_from_com = vecs_to_com[furthest_idx] / (max_dist_to_com + config.EPSILON)
-            drive_point = furthest_pos + dir_from_com * 10.0
-        else:
-            raise ValueError(f"Unknown shepherd mode: {current_mode}")
-        self.drive_point = np.copy(drive_point)
-
-        dog_desired_vel = drive_point - self.dog_pos
         dog_pos_before = np.copy(self.dog_pos)
-        self.dog_vel = self._limit_speed(dog_desired_vel, config.DOG_MAX_SPEED)
-        self.dog_pos += self.dog_vel
-        self.dog_pos = np.clip(self.dog_pos, 0, config.SPACE_SIZE)
-        self._record_control_state(frame, alarms, current_mode, drive_point, dog_pos_before)
+        self.dog_pos, self.dog_vel = advance_dog(
+            self.dog_pos,
+            self.navigation_point,
+            config,
+        )
+        self._record_control_state(frame, alarms, self.current_mode, self.drive_point, dog_pos_before)
 
-        # --- dynamic weights based on sheep status ---
-        cohesion_weights = np.where(
-            self.sheep_status == 'B',
-            config.WEIGHT_COHESION * config.WEIGHT_COHESION_B_FACTOR,
-            config.WEIGHT_COHESION
-        )[:, np.newaxis]
-        dog_repulsion_weights = np.where(
-            self.sheep_status == 'A',
-            config.WEIGHT_DOG_REPULSION * config.WEIGHT_DOG_REPULSION_A_FACTOR,
-            config.WEIGHT_DOG_REPULSION
-        )[:, np.newaxis]
-        separation_weights = np.where(self.sheep_status == 'B', config.WEIGHT_SEPARATION * config.WEIGHT_SEPARATION_B_FACTOR, config.WEIGHT_SEPARATION)[:, np.newaxis]
-
-        # --- sheep logic ---
-        # A. cohesion (converge to the center of mass)
-        cohesion = (com - self.sheep_pos) * cohesion_weights
-        
-        # B. avoid the shepherd (strength is inversely proportional to distance d)
-        vec_from_dog = self.sheep_pos - self.dog_pos
-        dist_from_dog = np.linalg.norm(vec_from_dog, axis=1, keepdims=True)
-        dir_from_dog = vec_from_dog / (dist_from_dog + 1e-6)
-        dog_repulsion = dir_from_dog * (dog_repulsion_weights / (dist_from_dog + 1e-6))
-        
-        # only react to the dog if it is within sensing range
-        dog_repulsion[dist_from_dog[:, 0] > config.DOG_SENSING_RANGE] = 0
-        
-        # C. boundary repulsion force (prevent the sheep from sticking to the wall)
-        boundary_force = np.zeros_like(self.sheep_pos)
-        boundary_force[self.sheep_pos < config.BOUNDARY_MARGIN] += config.WEIGHT_BOUNDARY
-        boundary_force[self.sheep_pos > config.SPACE_SIZE - config.BOUNDARY_MARGIN] -= config.WEIGHT_BOUNDARY
-
-        # D. separation (prevent sheep from overlapping)
-        diffs = self.sheep_pos[:, np.newaxis, :] - self.sheep_pos[np.newaxis, :, :]
-        dists = np.linalg.norm(diffs, axis=2)
-        separation_radius = np.where(self.sheep_status == 'B', config.SEPARATION_RADIUS_B, config.SEPARATION_RADIUS_NORMAL)[:, np.newaxis]
-        mask = (dists > 0) & (dists < separation_radius)
-        repulsion_forces = diffs / (dists[..., np.newaxis]**2 + 1e-6)
-        repulsion_forces[~mask] = 0
-        separation = np.sum(repulsion_forces, axis=1) * separation_weights
-
-        # combine the forces and update the velocity and position
-        total_force = cohesion + dog_repulsion + boundary_force + separation
-        
-        # Type A keeps most of its current velocity direction and only weakly accepts new force.
-        force_response = np.where(self.sheep_status == 'A', 1.0 - config.INERTIA_FACTOR_A, 1.0)[:, np.newaxis]
-        self.sheep_vel += total_force * force_response
-        
-        self.sheep_vel = self._limit_speed_array(self.sheep_vel, config.SHEEP_MAX_SPEED)
-        self.sheep_pos += self.sheep_vel
+        self.sheep_pos, self.sheep_vel = advance_sheep(
+            self.sheep_pos,
+            self.sheep_vel,
+            self.sheep_status,
+            self.dog_pos,
+            self.goal_pos,
+            config,
+        )
 
         return False
 
-    def _limit_speed(self, vel, max_speed):
-        speed = np.linalg.norm(vel)
-        if speed > max_speed:
-            return (vel / speed) * max_speed
-        return vel
-
-    def _limit_speed_array(self, vels, max_speed):
-        speeds = np.linalg.norm(vels, axis=1, keepdims=True)
-        speeds_with_epsilon = speeds + config.EPSILON
-        scale = np.minimum(1.0, max_speed / speeds_with_epsilon)
-        return vels * scale
+    def _apply_control_decision(self, decision):
+        self.current_mode = decision.mode
+        self.control_action = decision.action
+        self.target_sheep_id = decision.target_sheep_id
+        self.drive_point = np.copy(decision.drive_point)
+        self.navigation_point = np.copy(decision.navigation_point)
+        self.decision_source = decision.source
+        self.decision_frame = decision.issued_for_frame
+        self.decision_metadata = dict(decision.metadata)
 
     def repair_sheep(self, indices):
         """
@@ -256,3 +261,8 @@ class SwarmEnv:
         if isinstance(indices, int):
             indices = [indices]
         self.sheep_status[indices] = 'Normal'
+
+    def close(self):
+        close = getattr(self.controller, "close", None)
+        if close is not None:
+            close()

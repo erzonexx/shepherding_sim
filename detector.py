@@ -53,23 +53,31 @@ class Detector:
             self.history_dist_to_goal.pop(0)
 
         # --- 2. Danger Detection Rules ---
-        is_danger = False
-        danger_type = "None"
-        description = "Flock status is normal."
+        danger_types = []
+        descriptions = []
 
         # Rule 1: Excessive dispersion (compound condition)
         if dispersion > self.dispersion_threshold and mean_spread > self.mean_spread_threshold:
-            is_danger = True
-            danger_type = "flock_splitting"  # Flock splitting tendency
-            description = f"Flock splitting: dispersion {dispersion:.2f}m (>{self.dispersion_threshold:.2f}m) and mean spread {mean_spread:.2f}m (>{self.mean_spread_threshold:.2f}m)."
+            danger_types.append("flock_splitting")
+            descriptions.append(
+                f"Flock splitting: dispersion {dispersion:.2f}m "
+                f"(>{self.dispersion_threshold:.2f}m) and mean spread "
+                f"{mean_spread:.2f}m (>{self.mean_spread_threshold:.2f}m)."
+            )
 
-        # Rule 2: Stagnation (only checked when no other dangers are detected)
-        if not is_danger and len(self.history_dist_to_goal) == self.stagnation_frames:
+        # Rule 2: Stagnation is monitored independently of flock splitting.
+        if len(self.history_dist_to_goal) == self.stagnation_frames:
             progress = self.history_dist_to_goal[0] - self.history_dist_to_goal[-1]
             if progress < self.stagnation_threshold:
-                is_danger = True
-                danger_type = "stagnation"  # Stagnation
-                description = f"Flock has been stagnant for {self.stagnation_frames} frames (distance change: {progress:.2f} meters)."
+                danger_types.append("stagnation")
+                descriptions.append(
+                    f"Flock has been stagnant for {self.stagnation_frames} "
+                    f"frames (distance change: {progress:.2f} meters)."
+                )
+
+        is_danger = bool(danger_types)
+        danger_type = danger_types[0] if danger_types else "None"
+        description = " ".join(descriptions) if descriptions else "Flock status is normal."
 
         # --- 3. Output standardized interface ---
         # assemble the metrics for data recording
@@ -84,6 +92,7 @@ class Detector:
         report = {
             'is_danger': is_danger,
             'danger_type': danger_type,
+            'danger_types': danger_types,
             'description': description
         }
 
@@ -94,5 +103,5 @@ class Detector:
         Return the active alarm list while preserving metrics/report for logging.
         """
         metrics, report = self.analyze_flock(sheep_pos, goal_pos)
-        alarms = [report['danger_type']] if report['is_danger'] else []
+        alarms = list(report['danger_types'])
         return alarms, metrics, report
