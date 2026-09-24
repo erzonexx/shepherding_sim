@@ -1,0 +1,274 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "name": "Shepherding - Select architecture and scenario",
+      "args": [
+        "--controller",
+        "${input:controller}",
+        "--scenario",
+        "${input:scenario}",
+        "--seed",
+        "${input:seed}",
+        "--max-steps",
+        "${input:maxSteps}",
+        "--repair",
+        "${input:video}"
+      ]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "name": "Shepherding - Custom sheep counts",
+      "args": [
+        "--controller",
+        "${input:controller}",
+        "--abnormal-a",
+        "${input:countA}",
+        "--abnormal-b",
+        "${input:countB}",
+        "--seed",
+        "${input:seed}",
+        "--max-steps",
+        "${input:maxSteps}",
+        "--repair",
+        "${input:video}"
+      ]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run_experiments.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "name": "Batch - Select architecture and scenario",
+      "args": [
+        "--controller",
+        "${input:controller}",
+        "--scenario",
+        "${input:scenario}",
+        "${input:batchRepair}",
+        "--runs",
+        "${input:batchRuns}",
+        "--seed-mode",
+        "${input:batchSeedMode}",
+        "--batch-seed",
+        "${input:batchSeed}",
+        "--max-steps",
+        "${input:maxSteps}",
+        "--export",
+        "${input:batchExport}"
+      ]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run_experiments.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "name": "Batch - Custom sheep counts",
+      "args": [
+        "--controller",
+        "${input:controller}",
+        "--scenario",
+        "custom",
+        "--abnormal-a",
+        "${input:countA}",
+        "--abnormal-b",
+        "${input:countB}",
+        "${input:batchRepair}",
+        "--runs",
+        "${input:batchRuns}",
+        "--seed-mode",
+        "${input:batchSeedMode}",
+        "--batch-seed",
+        "${input:batchSeed}",
+        "--max-steps",
+        "${input:maxSteps}",
+        "--export",
+        "${input:batchExport}"
+      ]
+    },
+    {
+      "name": "Shepherding - Run all tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": [
+        "discover",
+        "-s",
+        "tests",
+        "-v"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "controller",
+      "type": "pickString",
+      "description": "Control architecture",
+      "options": [
+        {
+          "label": "Rule-based: fast controller only",
+          "value": "rule"
+        },
+        {
+          "label": "Dual-layer: fast controller + DeepSeek slow controller",
+          "value": "deepseek"
+        }
+      ],
+      "default": "rule"
+    },
+    {
+      "id": "scenario",
+      "type": "pickString",
+      "description": "Sheep population (independent of architecture)",
+      "options": [
+        {
+          "label": "Normal: 0A + 0B",
+          "value": "normal"
+        },
+        {
+          "label": "Type A: 4A + 0B",
+          "value": "type-a"
+        },
+        {
+          "label": "Type B: 0A + 4B",
+          "value": "type-b"
+        },
+        {
+          "label": "Mixed: 2A + 2B",
+          "value": "mixed"
+        },
+        {
+          "label": "Stress: 3A + 3B",
+          "value": "stress"
+        }
+      ],
+      "default": "stress"
+    },
+    {
+      "id": "countA",
+      "type": "promptString",
+      "description": "Number of Type A sheep (A + B must not exceed 20 with default config)",
+      "default": "3"
+    },
+    {
+      "id": "countB",
+      "type": "promptString",
+      "description": "Number of Type B sheep",
+      "default": "3"
+    },
+    {
+      "id": "seed",
+      "type": "promptString",
+      "description": "Random seed (use the same seed for controller comparisons)",
+      "default": "70"
+    },
+    {
+      "id": "maxSteps",
+      "type": "promptString",
+      "description": "Maximum simulation frames",
+      "default": "2000"
+    },
+    {
+      "id": "video",
+      "type": "pickString",
+      "description": "Export MP4 after simulation?",
+      "options": [
+        {
+          "label": "No MP4 (data, trajectory and analysis are still saved)",
+          "value": "--no-video"
+        },
+        {
+          "label": "Save MP4",
+          "value": "--video"
+        }
+      ],
+      "default": "--no-video"
+    },
+    {
+      "id": "batchRepair",
+      "type": "pickString",
+      "description": "Anomaly repair (independent of architecture)",
+      "options": [
+        {
+          "label": "Enable repair",
+          "value": "--repair"
+        },
+        {
+          "label": "Disable repair (no LLM decisions)",
+          "value": "--no-repair"
+        }
+      ],
+      "default": "--repair"
+    },
+    {
+      "id": "batchRuns",
+      "type": "promptString",
+      "description": "Number of runs / distinct seeds",
+      "default": "10"
+    },
+    {
+      "id": "batchSeedMode",
+      "type": "pickString",
+      "description": "Seed generation",
+      "options": [
+        {
+          "label": "Random seed group (repeatable using the same group ID)",
+          "value": "random"
+        },
+        {
+          "label": "Consecutive seeds",
+          "value": "sequence"
+        }
+      ],
+      "default": "random"
+    },
+    {
+      "id": "batchSeed",
+      "type": "promptString",
+      "description": "Seed-group ID (random mode) or starting seed (consecutive mode)",
+      "default": "70"
+    },
+    {
+      "id": "batchExport",
+      "type": "pickString",
+      "description": "Outputs for each run",
+      "options": [
+        {
+          "label": "Data and summary only",
+          "value": "data"
+        },
+        {
+          "label": "Data, trajectory and analysis plots",
+          "value": "plots"
+        },
+        {
+          "label": "Data, plots and MP4 videos",
+          "value": "video"
+        }
+      ],
+      "default": "data"
+    }
+  ]
+}

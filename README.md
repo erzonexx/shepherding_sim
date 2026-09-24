@@ -84,7 +84,73 @@ python main.py --controller rule
 
 Available controllers are `rule`, `mock-llm`, `openai`, and `deepseek`.
 
+### VSCode: Select Conditions Without Editing Code
+
+Open this folder in VSCode and select your virtual environment using
+`Python: Select Interpreter`. In **Run and Debug** (`Ctrl+Shift+D`), choose
+**Shepherding - Select architecture and scenario**, then press the green play
+button (or `F5`). The prompts let you choose independently:
+
+1. Architecture: rule-based fast control, or fast control plus DeepSeek.
+2. Population: Normal (0A+0B), Type A (4A+0B), Type B (0A+4B), Mixed (2A+2B),
+   or Stress (3A+3B).
+3. Seed, maximum frames, and whether to export MP4.
+
+Use **Shepherding - Custom sheep counts** to enter arbitrary A/B counts.
+Both launch options enable anomaly repair for either architecture. With the
+dual-layer architecture, the fast controller continues every frame; actual LLM
+requests still depend on concurrent alarms, so selecting DeepSeek does not
+guarantee a request in every run. Keep population and seed identical for a
+controller comparison.
+
+The launch configurations read API credentials from the environment or a local
+`.env` file in this project folder. For DeepSeek, that file can contain
+`DEEPSEEK_API_KEY=your-key`. It is ignored by Git. The shared `launch.json`
+contains no credentials. No API key is needed for rule-based control.
+
+These options apply to **Run and Debug**, not the editor's **Run Python File**
+button. Running `main.py` with no arguments continues to use `config.py`.
+Selections affect only the current process and do not rewrite `config.py`.
+The window title shows the controller, A/B counts, and seed. Effective settings
+are also saved as `logs/data/run_<timestamp>.json` beside the simulation data.
+
+The same conditions can be supplied from a terminal:
+
+```powershell
+python main.py --controller rule --scenario mixed --seed 70 --no-video
+python main.py --controller deepseek --scenario mixed --seed 70 --no-video
+python main.py --abnormal-a 1 --abnormal-b 6 --seed 70 --max-steps 2000
+```
+
+Use `--no-repair` for a no-repair baseline, or `--random-seed` for random initial
+conditions. Scene presets change only sheep counts; they do not select an
+architecture or toggle repair. The C00-C08 batch cases below retain their
+original population and repair settings.
+
 ## Experiments
+
+For a batch launched from VSCode, select **Batch - Select architecture and
+scenario** in **Run and Debug** and press play. Choose architecture, population,
+repair on/off, number of runs, seed mode, seed-group ID, frame limit, and outputs.
+For example, Rule + Stress + repair on + 10 runs runs ten 3A+3B simulations.
+**Batch - Custom sheep counts** supports arbitrary A/B counts.
+
+In random mode, the seed-group ID initializes a reproducible draw of distinct
+seeds. Reuse the same ID and run count when comparing architectures; change the
+ID for a different sample. In sequence mode, it is the first seed (e.g. 141
+with 10 runs gives 141-150). All actual seeds are printed and saved in metadata.
+Both batch launch options load the project's ignored `.env` file for API keys.
+These batches do not show live animations. MP4 export is optional.
+
+The equivalent command-line options are:
+
+```powershell
+python run_experiments.py --controller rule --scenario stress --repair --runs 10 --seed-mode random --batch-seed 70
+```
+
+Scene presets specify population only; architecture and repair are independent.
+Named scenes appear as `stress`, `mixed`, etc. in the summary. The original
+C00-C08 cases below remain available with their fixed population/repair settings.
 
 Run all nine predefined cases with seed 70:
 
@@ -99,8 +165,11 @@ python run_experiments.py --cases C02 C08 --seeds 141 142 143 --controller rule
 ```
 
 Add `--visuals`, `--video`, or `--analysis` only when those outputs are needed.
-The summary is written to `logs/experiment_summary.csv` by default. Each summary
-also has metadata containing the configuration and source hashes.
+Each batch creates `logs/experiments/<timestamp>/summary.csv` by default.
+The summary is updated after each completed run. Metadata alongside it records
+the seed plan, actual seeds, case settings, base configuration, and source hashes.
+Per-run data and control logs remain in `logs/data/` and `logs/control/`.
+An explicit `--output` path overrides the default and is overwritten if reused.
 
 ### Experiment Matrix
 

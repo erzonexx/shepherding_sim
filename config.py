@@ -3,6 +3,14 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+SCENARIOS = {
+    "normal": (0, 0),
+    "type-a": (4, 0),
+    "type-b": (0, 4),
+    "mixed": (2, 2),
+    "stress": (3, 3),
+}
+
 # 0. simulation settings
 MAX_STEPS = 2000
 USE_FIXED_SEED = True 

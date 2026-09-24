@@ -17,4 +17,5 @@ __pycache__/
 *$py.class
 
 # IDEs and editors
-.vscode/
+.vscode/*
+!.vscode/launch.json

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime
 import hashlib
 import json
+import random
 from pathlib import Path
 import time
 
@@ -448,6 +449,11 @@ def write_experiment_metadata(output_path, args, seeds, selected_cases):
         "controller": args.controller,
         "seeds": seeds,
         "cases": [case["case"] for case in selected_cases],
+        "case_settings": selected_cases,
+        "seed_plan": {
+            "mode": args.seed_mode if args.runs is not None else "explicit",
+            "batch_seed": args.batch_seed if args.runs is not None else None,
+        },
         "max_steps": args.max_steps,
         "llm_cache_enabled": not args.no_llm_cache,
         "config": {
@@ -456,7 +462,7 @@ def write_experiment_metadata(output_path, args, seeds, selected_cases):
             if key.isupper() and isinstance(value, (str, int, float, bool))
         },
         "source_sha256": {
-            name: hashlib.sha256(Path(name).read_bytes()).hexdigest()
+            name: hashlib.sha256((config.PROJECT_ROOT / name).read_bytes()).hexdigest()
             for name in source_names
         },
     }
@@ -465,8 +471,8 @@ def write_experiment_metadata(output_path, args, seeds, selected_cases):
     return metadata_path
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Run the fixed C00-C08 demo experiment suite.")
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Run batch shepherding experiments.")
     seed_group = parser.add_mutually_exclusive_group()
     seed_group.add_argument("--seed", type=int, help="Run one fixed seed.")
     seed_group.add_argument(
@@ -475,12 +481,30 @@ def parse_args():
         type=int,
         help="Run several fixed seeds, for example: --seeds 21 22 23.",
     )
-    parser.add_argument("--max-steps", type=int, default=2000, help="Maximum simulation frames per case.")
+    seed_group.add_argument("--runs", type=int, help="Number of distinct seeds to generate per scenario.")
+    parser.add_argument("--seed-mode", choices=("random", "sequence"), default="random")
     parser.add_argument(
+        "--batch-seed", type=int, default=70,
+        help="Random seed-group identifier, or the first seed in sequence mode.",
+    )
+    parser.add_argument("--max-steps", type=int, default=2000, help="Maximum simulation frames per case.")
+    scenario_group = parser.add_mutually_exclusive_group()
+    scenario_group.add_argument(
         "--cases",
         nargs="+",
         choices=tuple(case["case"] for case in CASES),
         help="Run only the listed cases, for example: --cases C08.",
+    )
+    scenario_group.add_argument("--scenario", choices=(*config.SCENARIOS, "custom"))
+    parser.add_argument("--abnormal-a", type=int)
+    parser.add_argument("--abnormal-b", type=int)
+    parser.add_argument(
+        "--repair", action=argparse.BooleanOptionalAction, default=None,
+        help="Repair on/off for --scenario; existing --cases retain their definitions.",
+    )
+    parser.add_argument(
+        "--export", choices=("data", "plots", "video"), default="data",
+        help="Batch exports: data only, data plus plots, or data plus plots and MP4.",
     )
     parser.add_argument("--visuals", action="store_true", help="Save trajectory PNG files.")
     parser.add_argument("--video", action="store_true", help="Save MP4 animations. This is time-consuming and requires ffmpeg.")
@@ -494,21 +518,63 @@ def parse_args():
     parser.add_argument("--max-log-files", type=int, default=200, help="Temporary log retention limit during this run.")
     parser.add_argument(
         "--output",
-        default=str(config.PROJECT_ROOT / "logs" / "experiment_summary.csv"),
-        help="CSV path for the generated summary.",
+        default=None,
+        help="Summary CSV path; default is a new timestamped logs/experiments folder.",
     )
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.max_steps < 1 or args.max_log_files < 1:
+        parser.error("--max-steps and --max-log-files must be positive.")
+    if args.runs is not None and not 1 <= args.runs <= 2**32:
+        parser.error("--runs must be between 1 and 4294967296.")
+    for seed in [args.batch_seed, *([] if args.seed is None else [args.seed]), *(args.seeds or [])]:
+        if not 0 <= seed < 2**32:
+            parser.error("Seeds must be between 0 and 4294967295.")
+    if args.runs and args.seed_mode == "sequence" and args.batch_seed + args.runs > 2**32:
+        parser.error("The seed sequence exceeds 4294967295.")
+    if args.scenario is None and any(value is not None for value in (args.abnormal_a, args.abnormal_b, args.repair)):
+        parser.error("Population and repair overrides require --scenario.")
+    if args.scenario:
+        counts = config.SCENARIOS.get(args.scenario, (config.NUM_ABNORMAL_A, config.NUM_ABNORMAL_B))
+        args.abnormal_a = counts[0] if args.abnormal_a is None else args.abnormal_a
+        args.abnormal_b = counts[1] if args.abnormal_b is None else args.abnormal_b
+        if min(args.abnormal_a, args.abnormal_b) < 0 or args.abnormal_a + args.abnormal_b > config.NUM_SHEEP:
+            parser.error("A/B counts must be nonnegative and their sum cannot exceed NUM_SHEEP.")
+        args.repair = config.REPAIR_ENABLED if args.repair is None else args.repair
+    args.visuals = args.visuals or args.export in ("plots", "video")
+    args.analysis = args.analysis or args.export in ("plots", "video")
+    args.video = args.video or args.export == "video"
+    return args
 
 
-def main():
-    args = parse_args()
-    rows = []
-    seeds = list(dict.fromkeys(args.seeds or [args.seed if args.seed is not None else 70]))
-    selected_cases = (
+def select_seeds(args):
+    if args.runs is not None:
+        if args.seed_mode == "sequence":
+            return list(range(args.batch_seed, args.batch_seed + args.runs))
+        return random.Random(args.batch_seed).sample(range(2**32), args.runs)
+    return list(dict.fromkeys(args.seeds or [args.seed if args.seed is not None else 70]))
+
+
+def select_cases(args):
+    if args.scenario:
+        return [{
+            "case": args.scenario,
+            "purpose": f"{args.scenario} population, repair {'on' if args.repair else 'off'}",
+            "num_abnormal_a": args.abnormal_a,
+            "num_abnormal_b": args.abnormal_b,
+            "repair_enabled": args.repair,
+        }]
+    return (
         [case for case in CASES if case["case"] in args.cases]
         if args.cases
         else CASES
     )
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    rows = []
+    seeds = select_seeds(args)
+    selected_cases = select_cases(args)
 
     if args.controller in ("openai", "deepseek"):
         try:
@@ -517,10 +583,20 @@ def main():
             raise SystemExit(f"Controller setup failed: {exc}") from None
         probe.close()
 
+    output_path = (
+        Path(args.output) if args.output else config.PROJECT_ROOT / "logs" / "experiments"
+        / datetime.now().strftime("%Y%m%d_%H%M%S_%f") / "summary.csv"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path = write_experiment_metadata(output_path, args, seeds, selected_cases)
+    # Preserve every run in this batch even when it exceeds the usual retention limit.
+    max_log_files = max(args.max_log_files, len(seeds) * len(selected_cases))
     print(
         f"Running {len(selected_cases)} cases x {len(seeds)} seeds "
-        f"with max_steps={args.max_steps}"
+        f"with max_steps={args.max_steps}, controller={args.controller}"
     )
+    print(f"Seeds: {seeds}")
+    print(f"Results: {output_path}")
     for seed in seeds:
         for case in selected_cases:
             print(
@@ -532,7 +608,7 @@ def main():
                 case,
                 seed=seed,
                 max_steps=args.max_steps,
-                max_log_files=args.max_log_files,
+                max_log_files=max_log_files,
                 save_visuals=args.visuals,
                 save_video=args.video,
                 save_analysis=args.analysis,
@@ -540,17 +616,13 @@ def main():
                 llm_cache_enabled=not args.no_llm_cache,
             )
             rows.append(row)
+            write_summary(rows, output_path)
             print(
                 f"  -> success={row['Success']}, frames={row['Frames']}, "
                 f"final_dist={row['FinalDist']}, "
                 f"danger_frames={row['DangerFrames']}, ts={row['Timestamp']}"
             )
 
-    output_path = Path(args.output)
-    write_summary(rows, output_path)
-    metadata_path = write_experiment_metadata(
-        output_path, args, seeds, selected_cases
-    )
     print(f"Summary saved to {output_path}")
     print(f"Metadata saved to {metadata_path}")
 
