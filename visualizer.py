@@ -9,7 +9,7 @@ import config
 
 COLOR_MAP = {'Normal': 'white', 'A': 'red', 'B': 'orange'}
 TRACE_COLOR_MAP = {'Normal': 'lightgray', 'A': 'red', 'B': 'orange'}
-LEGEND_LABELS = {'Normal': 'Normal (Flock)', 'A': 'Type A (Unresponsive)', 'B': 'Type B (Dispersing)'}
+LEGEND_LABELS = {'Normal': 'Normal (Flock)', 'A': 'Type A (Weak Response)', 'B': 'Type B (Dispersing)'}
 
 class Visualizer:
     def __init__(self, env):

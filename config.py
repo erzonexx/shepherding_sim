@@ -40,6 +40,9 @@ HIGH_LEVEL_MAX_RESPONSE_AGE_FRAMES = 600
 HIGH_LEVEL_RETRY_FRAMES = 30
 HIGH_LEVEL_CONTEXT_FRAMES = 30
 HIGH_LEVEL_FORECAST_FRAMES = 30
+# Experimental API request throttles; these defaults preserve the original policy.
+HIGH_LEVEL_CONCURRENT_MIN_FRAMES = 1
+HIGH_LEVEL_ONE_REQUEST_PER_EPISODE = False
 
 # Repair-target selection. Both repair modes keep a target briefly and switch
 # only when another sheep is meaningfully more urgent.
@@ -73,7 +76,7 @@ GOAL_MARGIN = 20.0
 NUM_SHEEP = 20
 SHEEP_MAX_SPEED = 0.7
 SHEEP_START_MARGIN = 30.0
-SHEEP_START_RADIUS = 15.0
+SHEEP_START_RADIUS = 15.0  # Gaussian position standard deviation
 
 # 3. shepherd settings
 NUM_DOGS = 1
@@ -98,10 +101,9 @@ DOG_SENSING_RANGE = 50.0       # radius within which sheep react to the dog
 EPSILON = 1e-6                 # small number to avoid division by zero
 
 # 6. abnormal sheep settings
-NUM_ABNORMAL_A = 3             # number of abnormal sheep A (Unresponsive)
+NUM_ABNORMAL_A = 3             # number of abnormal sheep A (weak dog response)
 NUM_ABNORMAL_B = 3             # number of abnormal sheep B (Dispersing)
-WEIGHT_DOG_REPULSION_A_FACTOR = 0.15 # type A dog fear factor (vs normal)
-INERTIA_FACTOR_A = 0.95        # type A inertia retention (higher is more sluggish)
+WEIGHT_DOG_REPULSION_A_FACTOR = 0.15 # type A dog response relative to normal
 WEIGHT_COHESION_B_FACTOR = 0.15  # type B cohesion force factor (vs normal)
 WEIGHT_SEPARATION_B_FACTOR = 1.5 # type B separation force factor (vs normal)
 SEPARATION_RADIUS_B = 6.0      # type B's separation sensing radius (larger)

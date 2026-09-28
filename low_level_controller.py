@@ -8,6 +8,19 @@ import config
 from control_types import ControlDecision, ControlObservation
 
 
+def rule_mode_for_alarms(alarms, repair_enabled=True):
+    """Choose the deterministic fallback mode from the active alarms."""
+    if not repair_enabled:
+        return "TARGET_TRACKING"
+    if "flock_splitting" in alarms and "stagnation" in alarms:
+        return "HARD_TO_GUIDE"
+    if "flock_splitting" in alarms:
+        return "COHESION_PRIORITY"
+    if "stagnation" in alarms:
+        return "HARD_TO_GUIDE"
+    return "TARGET_TRACKING"
+
+
 class LowLevelController:
     """Compute kinematic commands, with the original rule mapping as fallback."""
 
@@ -175,11 +188,5 @@ class LowLevelController:
         self.repair_target_age = 0
 
     def _select_mode(self, alarms):
-        if not self.settings.REPAIR_ENABLED:
-            return "TARGET_TRACKING"
-        if "flock_splitting" in alarms:
-            return "COHESION_PRIORITY"
-        if "stagnation" in alarms:
-            return "HARD_TO_GUIDE"
-        return "TARGET_TRACKING"
+        return rule_mode_for_alarms(alarms, self.settings.REPAIR_ENABLED)
 

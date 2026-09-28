@@ -16,6 +16,7 @@ from detector import Detector
 from environment import SwarmEnv
 from plot_analysis import plot_metrics_from_files
 from high_level_controller import build_controller
+from low_level_controller import rule_mode_for_alarms
 
 
 CASES = [
@@ -111,6 +112,8 @@ CONFIG_KEYS = [
     "HIGH_LEVEL_RETRY_FRAMES",
     "HIGH_LEVEL_CONTEXT_FRAMES",
     "HIGH_LEVEL_FORECAST_FRAMES",
+    "HIGH_LEVEL_CONCURRENT_MIN_FRAMES",
+    "HIGH_LEVEL_ONE_REQUEST_PER_EPISODE",
     "REPAIR_TARGET_SELECTION_ENABLED",
     "COHESION_TARGET_MIN_HOLD_FRAMES",
     "HARD_TO_GUIDE_TARGET_MIN_HOLD_FRAMES",
@@ -133,7 +136,9 @@ CONFIG_KEYS = [
 
 @contextmanager
 def temporary_config(**overrides):
-    original = {key: getattr(config, key) for key in CONFIG_KEYS}
+    original = {
+        key: getattr(config, key) for key in set(CONFIG_KEYS) | set(overrides)
+    }
     try:
         for key, value in overrides.items():
             setattr(config, key, value)
@@ -231,6 +236,18 @@ def run_case(
         row["Controller"] = controller_kind
         env.close()
         return row
+
+
+def count_high_level_override_frames(control, repair_enabled):
+    active = control.loc[control["decision_source"] != "rule"]
+    return sum(
+        row.current_mode
+        != rule_mode_for_alarms(
+            () if row.alarms == "none" else tuple(row.alarms.split(";")),
+            repair_enabled,
+        )
+        for row in active.itertuples()
+    )
 
 
 def summarize_case(
@@ -336,6 +353,9 @@ def summarize_case(
         "HighLevelAccepted": len(accepted_responses),
         "HighLevelRejected": len(rejected_responses),
         "HighLevelActiveFrames": int((control["decision_source"] != "rule").sum()),
+        "HighLevelOverrideFrames": count_high_level_override_frames(
+            control, case["repair_enabled"]
+        ),
         "MeanHighLevelHoldFrames": (
             round(float(hold_frames.mean()), 2) if not hold_frames.empty else ""
         ),
@@ -411,6 +431,7 @@ def write_summary(rows, output_path):
         "HighLevelAccepted",
         "HighLevelRejected",
         "HighLevelActiveFrames",
+        "HighLevelOverrideFrames",
         "MeanHighLevelHoldFrames",
         "MeanHighLevelLatencyFrames",
         "MeanHighLevelLatencySeconds",
@@ -511,6 +532,16 @@ def parse_args(argv=None):
     parser.add_argument("--analysis", action="store_true", help="Generate per-run analysis charts.")
     parser.add_argument("--controller", choices=("rule", "mock-llm", "openai", "deepseek"), default="rule", help="Controller architecture for every case.")
     parser.add_argument(
+        "--concurrent-min-frames", type=int,
+        help="Require this many consecutive dual-alarm frames before an API request.",
+    )
+    parser.add_argument(
+        "--one-request-per-concurrent-episode",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Submit at most one API request until the dual-alarm episode ends.",
+    )
+    parser.add_argument(
         "--no-llm-cache",
         action="store_true",
         help="Bypass saved API responses to measure a fresh provider call.",
@@ -524,6 +555,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.max_steps < 1 or args.max_log_files < 1:
         parser.error("--max-steps and --max-log-files must be positive.")
+    if args.concurrent_min_frames is not None and args.concurrent_min_frames < 1:
+        parser.error("--concurrent-min-frames must be positive.")
     if args.runs is not None and not 1 <= args.runs <= 2**32:
         parser.error("--runs must be between 1 and 4294967296.")
     for seed in [args.batch_seed, *([] if args.seed is None else [args.seed]), *(args.seeds or [])]:
@@ -572,6 +605,18 @@ def select_cases(args):
 
 def main(argv=None):
     args = parse_args(argv)
+    overrides = {}
+    if args.concurrent_min_frames is not None:
+        overrides["HIGH_LEVEL_CONCURRENT_MIN_FRAMES"] = args.concurrent_min_frames
+    if args.one_request_per_concurrent_episode is not None:
+        overrides["HIGH_LEVEL_ONE_REQUEST_PER_EPISODE"] = (
+            args.one_request_per_concurrent_episode
+        )
+    with temporary_config(**overrides):
+        return run_batch(args)
+
+
+def run_batch(args):
     rows = []
     seeds = select_seeds(args)
     selected_cases = select_cases(args)

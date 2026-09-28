@@ -5,7 +5,8 @@ import numpy as np
 import config
 from control_types import ControlDecision, ControlObservation
 from environment import SwarmEnv
-from low_level_controller import LowLevelController
+from high_level_controller import HighLevelController, MockLLMBackend
+from low_level_controller import LowLevelController, rule_mode_for_alarms
 from run_experiments import temporary_config
 
 
@@ -26,6 +27,27 @@ class FixedController:
 
 
 class ControllerContractTests(unittest.TestCase):
+    def test_fast_and_slow_layers_share_the_rule_fallback(self):
+        for repair_enabled in (False, True):
+            with temporary_config(REPAIR_ENABLED=repair_enabled):
+                low = LowLevelController()
+                high = HighLevelController(
+                    low_level_controller=low,
+                    backend=MockLLMBackend(),
+                )
+                for alarms in (
+                    (),
+                    ("flock_splitting",),
+                    ("stagnation",),
+                    ("flock_splitting", "stagnation"),
+                ):
+                    with self.subTest(repair_enabled=repair_enabled, alarms=alarms):
+                        expected = rule_mode_for_alarms(
+                            alarms, repair_enabled
+                        )
+                        self.assertEqual(low._select_mode(alarms), expected)
+                        self.assertEqual(high._rule_mode(alarms), expected)
+
     def test_rule_controller_maps_existing_alarms(self):
         sheep = np.array([[20., 20.], [30., 30.]])
         dog = np.array([10., 10.])
@@ -35,7 +57,7 @@ class ControllerContractTests(unittest.TestCase):
             for alarms, mode in [([], "TARGET_TRACKING"),
                                  (["stagnation"], "HARD_TO_GUIDE"),
                                  (["flock_splitting"], "COHESION_PRIORITY"),
-                                 (["stagnation", "flock_splitting"], "COHESION_PRIORITY")]:
+                                 (["stagnation", "flock_splitting"], "HARD_TO_GUIDE")]:
                 with self.subTest(alarms=alarms):
                     decision = controller.decide(ControlObservation(sheep, dog, goal, alarms))
                     self.assertEqual(decision.mode, mode)

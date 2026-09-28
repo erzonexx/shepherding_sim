@@ -6,6 +6,7 @@ import numpy as np
 import config
 from control_types import ControlObservation
 from high_level_controller import HighLevelController
+from low_level_controller import LowLevelController
 from mode_forecast import FORECAST_MODES, forecast_modes
 
 
@@ -74,6 +75,29 @@ class ModeForecastTests(unittest.TestCase):
             for forecast in forecasts.values()
         }
         self.assertGreater(len(signatures), 1)
+
+    def test_forecast_carries_target_hold_without_mutating_live_controller(self):
+        settings = self.settings(HIGH_LEVEL_FORECAST_FRAMES=3)
+        observation = ControlObservation(
+            sheep_positions=np.array([[20., 100.], [30., 100.]]),
+            dog_position=np.array([25., 100.]),
+            goal_position=np.array([180., 100.]),
+            alarms=("stagnation",),
+            sheep_velocities=np.array([[0.7, 0.], [-0.7, 0.]]),
+        )
+        live = LowLevelController(settings)
+        live.repair_target_mode = "HARD_TO_GUIDE"
+        live.repair_target_id = 0
+        live.repair_target_age = 5
+
+        held = forecast_modes(observation, settings, live)
+        fresh = forecast_modes(observation, settings)
+
+        self.assertNotEqual(
+            held["HARD_TO_GUIDE"], fresh["HARD_TO_GUIDE"]
+        )
+        self.assertEqual(live.repair_target_id, 0)
+        self.assertEqual(live.repair_target_age, 5)
 
     def test_pareto_dominance_requires_no_worse_on_every_metric(self):
         selected = {

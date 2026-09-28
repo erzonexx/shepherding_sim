@@ -1,5 +1,6 @@
 """Event-triggered high-level mode selection for shepherd control."""
 
+import copy
 from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Optional, Protocol
@@ -8,7 +9,7 @@ import numpy as np
 
 import config
 from control_types import ControlDecision, ControlObservation
-from low_level_controller import LowLevelController
+from low_level_controller import LowLevelController, rule_mode_for_alarms
 from mode_forecast import forecast_modes
 
 
@@ -104,6 +105,8 @@ class HighLevelController:
         )
         self.observed_alarms = ()
         self.alarm_started_frame = None
+        self.concurrent_alarm_frames = 0
+        self.concurrent_request_submitted = False
 
     def decide(self, observation: ControlObservation) -> ControlDecision:
         alarms = self._known_alarms(observation.alarms)
@@ -111,6 +114,11 @@ class HighLevelController:
         concurrent_only = getattr(
             self.backend, "trigger_on_concurrent_only", False
         )
+        if concurrent_only and len(alarms) >= 2:
+            self.concurrent_alarm_frames += 1
+        else:
+            self.concurrent_alarm_frames = 0
+            self.concurrent_request_submitted = False
         if not self.settings.REPAIR_ENABLED:
             self._clear_pending()
             release_event = self._release_active(
@@ -213,12 +221,25 @@ class HighLevelController:
         if (
             self.pending_request is None
             and observation.frame >= self.retry_after_frame
-            and (not concurrent_only or len(alarms) >= 2)
+            and (
+                not concurrent_only
+                or (
+                    len(alarms) >= 2
+                    and self.concurrent_alarm_frames
+                    >= self.settings.HIGH_LEVEL_CONCURRENT_MIN_FRAMES
+                    and (
+                        not self.settings.HIGH_LEVEL_ONE_REQUEST_PER_EPISODE
+                        or not self.concurrent_request_submitted
+                    )
+                )
+            )
         ):
             self.pending_request = self._make_request(
                 observation, alarms, state_summary
             )
             self.backend.submit(self.pending_request)
+            if concurrent_only:
+                self.concurrent_request_submitted = True
 
         if rejection_reason is not None:
             return self._low_level_decision(
@@ -312,6 +333,10 @@ class HighLevelController:
             and boundary_margin < 0.0
         ):
             return None, None, "candidate_drive_point_out_of_bounds"
+        if self._forecast_preference_reversed(
+            mode, request.state_summary, current_summary
+        ):
+            return None, None, "forecast_preference_reversed"
         dominating_mode = self._dominating_forecast_mode(
             mode,
             alarms,
@@ -330,11 +355,43 @@ class HighLevelController:
             return None, None, "hold_frames_out_of_range"
         return mode, hold_frames, None
 
+    @staticmethod
+    def _forecast_preference_reversed(mode, request_summary, current_summary):
+        request_rule = request_summary.get("rule_mode")
+        current_rule = current_summary.get("rule_mode")
+        if mode == current_rule or request_rule != current_rule:
+            return False
+        request_forecasts = request_summary.get("mode_forecasts", {})
+        current_forecasts = current_summary.get("mode_forecasts", {})
+        forecasts = (
+            request_forecasts.get(mode),
+            request_forecasts.get(request_rule),
+            current_forecasts.get(mode),
+            current_forecasts.get(current_rule),
+        )
+        if not all(isinstance(forecast, Mapping) for forecast in forecasts):
+            return False
+        try:
+            request_choice, request_fallback, current_choice, current_fallback = (
+                (float(forecast["centroid_progress"]),
+                 float(forecast["final_max_spread"]))
+                for forecast in forecasts
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        return (
+            request_choice[0] > request_fallback[0]
+            and request_choice[1] < request_fallback[1]
+            and current_choice[0] < current_fallback[0]
+            and current_choice[1] > current_fallback[1]
+        )
+
     def _with_mode_forecasts(self, observation, state_summary):
         summary = dict(state_summary)
         summary["mode_forecasts"] = forecast_modes(
             observation,
             self.settings,
+            self.low_level_controller,
         )
         return summary
 
@@ -418,6 +475,9 @@ class HighLevelController:
             return "stagnation"
         return None
 
+    def _rule_mode(self, alarms):
+        return rule_mode_for_alarms(alarms, self.settings.REPAIR_ENABLED)
+
     def _observe_state(self, observation, alarms):
         positions = observation.sheep_positions
         center = np.mean(positions, axis=0)
@@ -454,16 +514,11 @@ class HighLevelController:
             )
         )
 
-        cohesion_id = int(np.argmax(distances_to_center))
-        hard_id = int(np.argmax(distances_to_goal))
-        cohesion_drive_point = (
-            positions[cohesion_id]
-            + outward_directions[cohesion_id]
-            * self.settings.COHESION_REPAIR_DISTANCE
+        cohesion_decision = copy.copy(self.low_level_controller).decide(
+            observation, mode_override="COHESION_PRIORITY"
         )
-        hard_drive_point = (
-            positions[hard_id]
-            - goal_directions[hard_id] * self.settings.HARD_TO_GUIDE_DISTANCE
+        hard_decision = copy.copy(self.low_level_controller).decide(
+            observation, mode_override="HARD_TO_GUIDE"
         )
         statuses = self._normalized_statuses(
             observation.sheep_statuses, positions.shape[0]
@@ -484,6 +539,7 @@ class HighLevelController:
         return {
             "alarms": list(alarms),
             "primary_alarm": self._primary_alarm(alarms),
+            "rule_mode": self._rule_mode(alarms),
             "alarm_duration_frames": (
                 observation.frame - self.alarm_started_frame + 1 if alarms else 0
             ),
@@ -543,22 +599,22 @@ class HighLevelController:
                 outward_speeds,
             ),
             "cohesion_candidate": self._candidate_summary(
-                cohesion_id,
+                cohesion_decision.target_sheep_id,
                 statuses,
                 positions,
                 observation.dog_position,
-                cohesion_drive_point,
+                cohesion_decision.drive_point,
                 distances_to_goal,
                 distances_to_center,
                 goalward_speeds,
                 outward_speeds,
             ),
             "hard_to_guide_candidate": self._candidate_summary(
-                hard_id,
+                hard_decision.target_sheep_id,
                 statuses,
                 positions,
                 observation.dog_position,
-                hard_drive_point,
+                hard_decision.drive_point,
                 distances_to_goal,
                 distances_to_center,
                 goalward_speeds,

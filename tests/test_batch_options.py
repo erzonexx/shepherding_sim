@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+import config
 from main import SCENARIOS
 from run_experiments import (
-    CASES, parse_args, select_cases, select_seeds, write_experiment_metadata,
+    CASES, main, parse_args, select_cases, select_seeds,
+    write_experiment_metadata,
 )
 
 
@@ -64,6 +67,7 @@ class BatchOptionsTests(unittest.TestCase):
             ["--scenario", "custom", "--abnormal-a", "-1"],
             ["--scenario", "custom", "--abnormal-a", "20", "--abnormal-b", "1"],
             ["--cases", "C08", "--no-repair"],
+            ["--concurrent-min-frames", "0"],
         ):
             with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
@@ -80,6 +84,37 @@ class BatchOptionsTests(unittest.TestCase):
         self.assertEqual(metadata["case_settings"], cases)
         self.assertEqual(metadata["seed_plan"], {"mode": "random", "batch_seed": 70})
         self.assertIn("run_experiments.py", metadata["source_sha256"])
+
+    def test_trigger_controls_are_independent_of_scenario(self):
+        args = parse_args([
+            "--scenario", "stress", "--controller", "deepseek",
+            "--concurrent-min-frames", "3",
+            "--one-request-per-concurrent-episode",
+        ])
+        self.assertEqual(args.concurrent_min_frames, 3)
+        self.assertTrue(args.one_request_per_concurrent_episode)
+        self.assertEqual(select_cases(args)[0]["num_abnormal_a"], 3)
+        self.assertEqual(select_cases(args)[0]["num_abnormal_b"], 3)
+
+    def test_trigger_overrides_are_scoped_to_the_batch(self):
+        original = (
+            config.HIGH_LEVEL_CONCURRENT_MIN_FRAMES,
+            config.HIGH_LEVEL_ONE_REQUEST_PER_EPISODE,
+        )
+        with patch("run_experiments.run_batch", side_effect=lambda _: (
+            config.HIGH_LEVEL_CONCURRENT_MIN_FRAMES,
+            config.HIGH_LEVEL_ONE_REQUEST_PER_EPISODE,
+        )):
+            observed = main([
+                "--concurrent-min-frames", "3",
+                "--one-request-per-concurrent-episode",
+            ])
+        self.assertEqual(observed, (3, True))
+        self.assertEqual(
+            (config.HIGH_LEVEL_CONCURRENT_MIN_FRAMES,
+             config.HIGH_LEVEL_ONE_REQUEST_PER_EPISODE),
+            original,
+        )
 
 
 if __name__ == "__main__":

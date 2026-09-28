@@ -12,35 +12,52 @@ import time
 import config
 
 
-PROMPT_VERSION = "shepherd-mode-v5-counterfactual"
+PROMPT_VERSION = "shepherd-mode-v9-aligned-candidates"
 SYSTEM_INSTRUCTIONS = """You are the high-level mode selector for a 2D swarm
 shepherding controller. The low-level controller remains active while you reason.
 Calls normally contain concurrent splitting and stagnation alarms. Select exactly
 one existing mode from the supplied state, giving first priority to successful
 arrival, then to limiting dispersion and unsafe boundary approaches.
 
-COHESION_PRIORITY targets the sheep farthest from the flock centroid. Prefer it
+The rule_mode field is the deterministic choice that will run if you do
+not provide a useful override. Prefer rule_mode unless another admissible mode
+has a clear advantage in the current geometry and short-horizon estimates
+without meaningfully worsening goal progress, dispersion, predicted goal
+exits, or boundary safety.
+Do not switch modes solely because a Type A or Type B sheep is present.
+When both alarms are active, the rule fallback prioritizes HARD_TO_GUIDE;
+choose COHESION_PRIORITY only when the state and forecast together justify it.
+
+COHESION_PRIORITY targets a predicted outward flock outlier. Prefer it
 when spread is high or worsening, the cohesion candidate is moving outward, or a
 Type B sheep is the main dispersion target. HARD_TO_GUIDE targets the sheep
-farthest from the goal. Prefer it when progress is poor, the hard-to-guide
-candidate has weak goalward motion, or a Type A sheep is the main lagging target.
+predicted to remain most distant from the goal. Prefer it when progress is poor,
+the hard-to-guide candidate has weak goalward motion, or a Type A sheep is the
+main lagging target.
 TARGET_TRACKING is appropriate only when ordinary drive/collect behavior is
-already recovering the flock and neither repair candidate clearly dominates.
+already recovering the flock or a repair mode is likely to prolong a poor
+trajectory. COHESION_PRIORITY requires an active flock_splitting alarm;
+HARD_TO_GUIDE requires an active stagnation alarm. If one alarm appears brief or
+nearly resolved, avoid relying on its repair mode because API latency may leave
+that mode invalid by execution time.
 
 Use candidate dog travel, approach alignment, and drive-point boundary margin to
 avoid selecting a geometrically slow or risky intervention. Alignment near 1
 means the dog is already on the desired side; negative boundary margin means the
-candidate drive point lies outside the workspace. Type A means weak dog response
-and high inertia. Type B means weak cohesion and stronger separation. Positive
+candidate drive point lies outside the workspace. Type A means reduced dog
+repulsion with normal flocking and boundary response. Type B means weak cohesion
+and stronger separation. Positive
 goalward speed is toward the goal; positive outward speed is away from the flock.
 
 The mode_forecasts field contains independent 30-frame shadow simulations using
-the same kinematic model for all three existing modes. Prefer a mode with more
+the same kinematic model for all three existing modes. They are estimates, not
+guarantees of long-horizon success. Prefer a mode with more
 centroid_progress and inside_goal_change, and less final_max_spread,
 predicted_goal_exits, predicted_splitting_frames, and peak_out_of_bounds. Treat
 predicted goal exits and out-of-bounds motion as strong costs. Use static geometry
-only to resolve genuine forecast trade-offs. The execution interface will reject
-a choice that is Pareto-dominated by another currently admissible mode.
+to interpret genuine forecast trade-offs. The execution interface currently
+rejects a choice that is Pareto-dominated by another admissible mode; that
+filter is not itself a proof of safety.
 
 Use the supplied values exactly and do not invent missing state. Choose a 15-60
 frame hold, normally close to the 30-frame forecast horizon; use a shorter hold

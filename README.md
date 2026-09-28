@@ -6,7 +6,7 @@ an optional event-triggered LLM layer for anomaly recovery.
 
 The implementation focuses on two abnormal sheep types:
 
-- **Type A (weak response):** weak dog repulsion and high inertia.
+- **Type A (weak response):** reduced dog repulsion with otherwise normal flocking and boundary response.
 - **Type B (dispersing):** weak cohesion and stronger, longer-range separation.
 
 The low-level controller remains active every frame. The high-level layer is
@@ -41,7 +41,8 @@ The controller has three admissible modes:
 
 The rule controller maps splitting to `COHESION_PRIORITY`, stagnation to
 `HARD_TO_GUIDE`, and no alarm to `TARGET_TRACKING`. When both alarms coexist,
-the LLM may choose a repair mode from the same bounded set.
+the rule fallback now prioritizes `HARD_TO_GUIDE`; the LLM may choose a repair
+mode from the same bounded set.
 
 ## Project Layout
 
@@ -221,6 +222,17 @@ maximum distance from flock centroid > 40
 mean distance from flock centroid    > 15
 ```
 
+Initial sheep positions use a Gaussian spread with standard deviation 15.
+Because this is a broad initialization, a run may report splitting from frame
+zero; that report describes the initial geometry, not necessarily a Type B effect.
+This geometric alarm does not identify sheep types: Type B can increase spread
+without crossing both danger thresholds. Use the matched detector screen in
+`tests/anomaly_behavior/run_detector_screen.py` to assess that distinction.
+
+The default `TARGET_TRACKING` mode also collects the furthest sheep when maximum
+spread exceeds `COHESION_THRESHOLD` (25). A missing splitting alarm therefore
+does not mean the controller ignores every outlier.
+
 Stagnation is reported when centroid progress toward the goal is less than
 `1.0` over a 150-frame window.
 
@@ -233,17 +245,27 @@ exists. A light goal-retention force reduces outward drift near the goal edge.
 
 | Group | Important settings |
 | --- | --- |
-| Simulation | `MAX_STEPS`, `RANDOM_SEED`, `SPACE_SIZE`, `GOAL_RADIUS` |
+| Simulation | `MAX_STEPS`, `RANDOM_SEED`, `SPACE_SIZE`, `GOAL_RADIUS`, `SHEEP_START_RADIUS` |
 | Population | `NUM_SHEEP`, `NUM_ABNORMAL_A`, `NUM_ABNORMAL_B` |
 | Speed | `SHEEP_MAX_SPEED`, `DOG_MAX_SPEED` |
 | Flocking | `WEIGHT_COHESION`, `WEIGHT_SEPARATION`, `WEIGHT_BOUNDARY` |
 | Shepherd response | `WEIGHT_DOG_REPULSION`, `DOG_SENSING_RANGE` |
-| Type A | `WEIGHT_DOG_REPULSION_A_FACTOR`, `INERTIA_FACTOR_A` |
+| Type A | `WEIGHT_DOG_REPULSION_A_FACTOR` |
 | Type B | `WEIGHT_COHESION_B_FACTOR`, `WEIGHT_SEPARATION_B_FACTOR` |
 | Detection | `DANGER_DISPERSION_THRESHOLD`, `DANGER_MEAN_SPREAD_THRESHOLD`, `DANGER_STAGNATION_*` |
 | Repair geometry | `DOG_DRIVE_DISTANCE`, `HARD_TO_GUIDE_DISTANCE`, `COHESION_REPAIR_DISTANCE` |
 | Target stability | `*_TARGET_MIN_HOLD_FRAMES`, `REPAIR_TARGET_SWITCH_MARGIN`, `REPAIR_TARGET_LOOKAHEAD_FRAMES` |
 | High level | `HIGH_LEVEL_*`, `LLM_API_TIMEOUT_SECONDS`, `LLM_CACHE_ENABLED` |
+
+`HIGH_LEVEL_CONCURRENT_MIN_FRAMES=1` and
+`HIGH_LEVEL_ONE_REQUEST_PER_EPISODE=False` preserve immediate requests while
+both alarms are active. Experimental values can debounce and limit repeat API
+requests; they are not enabled by default.
+
+For a reproducible trigger-cost ablation, add
+`--concurrent-min-frames 3 --one-request-per-concurrent-episode` to a
+`run_experiments.py --controller deepseek` command. These options change the
+architecture trigger, not the chosen scenario or sheep behavior.
 
 Change one parameter family at a time and compare identical seeds. A visually
 desirable single trajectory is not enough to justify a parameter change.
@@ -276,27 +298,43 @@ python -m unittest discover -s tests -q
 
 ## Current Evidence
 
-These results describe completed local experiments; they are not universal
-performance claims.
+The rule controller is the stable baseline. Across two independent
+40-seed C08 cohorts, immediate DeepSeek succeeded in 76/80 runs versus
+75/80 for the rule controller: two rescues and one regression. Only
+19/80 LLM runs actually changed the applied rule mode. This does not
+establish a reliable LLM advantage.
 
-- In 80 paired rule-controller runs, predictive target selection improved task
-  success from 57 to 61 runs with no aggregate success loss in any scenario.
-- In a 10-seed C08 comparison (seeds 141-150), the rule controller succeeded in
-  6 runs and the DeepSeek controller in 8. Mean capped completion frames changed
-  from 1142.9 to 951.0; danger frames from 423.2 to 335.6; maximum dispersion
-  from 76.19 to 73.16.
-- The LLM comparison used 33 requests, 30 responses, 13 accepted decisions, and
-  17 rejected decisions, with mean response latency of about 1.20 seconds.
-- The sample is small and paired significance was not below 0.05. Repeating one
-  seed also showed provider nondeterminism.
+Detailed experiments, ablations, and local log paths are kept in
+[Experiment Notes](tools/experiment_notes.md).
 
 ## Limitations
 
 - The model is a 2D kinematic simulation, not a physical robot controller.
 - Only two anomaly types and one shepherd are currently modeled.
+- Sheep positions are not hard-clipped to the workspace. The guide-first
+  rule can improve task success while increasing some Type B boundary
+  excursions; an experimental outside-boundary fallback did not improve
+  C08 stress success consistently and is not enabled by default.
 - LLM results depend on provider latency and nondeterministic responses.
-- More seeds, ablations, and statistical analysis are required before making
-  strong comparative claims.
+- The current dual-alarm trigger covers all Type B and C08 rule failures in
+  one 80-seed audit, but also activates in successful normal runs. An alarm
+  alone does not demonstrate that an LLM override is useful or cost-effective.
+- Stagnation currently refers to flock-centroid progress. A naive per-sheep
+  version also activates in many successful normal runs, so individual
+  stagnation requires a better definition before it becomes a new alarm.
+- A local short-horizon forecast mode selector regressed Type B and C08
+  success on an independent 80-seed check. The forecast-based LLM rejection
+  criterion should be validated separately before it is treated as a safety
+  guarantee.
+- The current v9 LLM prompt, candidate geometry, and stateful forecasts are
+  interface corrections verified by local tests. The fresh paired API run
+  above shows no clear improvement over the updated guide-first rule. The
+  earlier positive LLM comparison used the former cohesion-first fallback
+  and is not evidence for the current architecture.
+- Repair-mode selection accuracy is undefined for the current concurrent-
+  alarm API trigger: the reference labels cover single alarms only, while
+  DeepSeek is called when both alarms occur. No ground-truth label or
+  selection-accuracy claim should be inferred from these runs.
 
 ## License
 

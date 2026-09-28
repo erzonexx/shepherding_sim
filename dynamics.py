@@ -130,12 +130,7 @@ def advance_sheep(
         + separation
         + goal_retention
     )
-    force_response = np.where(
-        statuses == "A",
-        1.0 - settings.INERTIA_FACTOR_A,
-        1.0,
-    )[:, np.newaxis]
-    next_velocities = velocities + total_force * force_response
+    next_velocities = velocities + total_force
     if settings.GOAL_RETENTION_ENABLED:
         next_velocities[goal_retention_mask] *= (
             settings.GOAL_RETENTION_VELOCITY_DAMPING

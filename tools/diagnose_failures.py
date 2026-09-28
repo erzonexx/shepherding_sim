@@ -44,13 +44,20 @@ def motion_diagnostics(env, positions_before, velocities_before, dog_before):
     weights = np.where(env.sheep_status == "A",
                        config.WEIGHT_DOG_REPULSION * config.WEIGHT_DOG_REPULSION_A_FACTOR,
                        config.WEIGHT_DOG_REPULSION)
-    response = np.where(env.sheep_status == "A", 1 - config.INERTIA_FACTOR_A, 1.)
-    dog_delta_v = from_dog * (weights * response / (dog_distances + 1e-6) ** 2)[:, None]
+    dog_delta_v = from_dog * (weights / (dog_distances + 1e-6) ** 2)[:, None]
     dog_delta_v[dog_distances > config.DOG_SENSING_RANGE] = 0
     outward = np.sum(dog_delta_v * radial, axis=1)
     outward_velocity = np.sum(velocities_before * radial, axis=1)
     target = env.target_sheep_id
     gap = float(np.linalg.norm(env.drive_point - env.dog_pos))
+    center_distances = np.linalg.norm(
+        positions_before - np.mean(positions_before, axis=0), axis=1
+    )
+    target_goal_direction = (
+        None if target is None
+        else (env.goal_pos - positions_before[target]) /
+        (goal_distances[target] + config.EPSILON)
+    )
     row = {
         "dog_x_before": float(dog_before[0]), "dog_y_before": float(dog_before[1]),
         "dog_x_after": float(env.dog_pos[0]), "dog_y_after": float(env.dog_pos[1]),
@@ -62,6 +69,20 @@ def motion_diagnostics(env, positions_before, velocities_before, dog_before):
         "inside_sheep_outward_dog_response_count": int(np.sum(inside & (outward > 0))),
         "inside_sheep_outward_dog_response_sum": float(np.maximum(outward[inside], 0).sum()),
         "target_goal_distance_before": None if target is None else float(goal_distances[target]),
+        "target_goal_distance_after": None if target is None else float(
+            np.linalg.norm(env.sheep_pos[target] - env.goal_pos)
+        ),
+        "target_goal_progress": None if target is None else float(
+            goal_distances[target]
+            - np.linalg.norm(env.sheep_pos[target] - env.goal_pos)
+        ),
+        "target_center_distance_before": None if target is None else float(center_distances[target]),
+        "target_is_farthest_from_center": None if target is None else bool(
+            center_distances[target] >= center_distances.max() - 1e-9
+        ),
+        "dog_behind_target": None if target is None else bool(
+            np.dot(env.dog_pos - positions_before[target], target_goal_direction) < 0
+        ),
         "target_dog_distance": None if target is None else float(dog_distances[target]),
         "target_outward_dog_response": None if target is None else float(outward[target]),
         "target_outward_velocity_before": None if target is None else float(outward_velocity[target]),
@@ -78,6 +99,7 @@ def observe(env, state_frame):
     positions = env.sheep_pos
     center = positions.mean(axis=0)
     goal_distances = np.linalg.norm(positions - env.goal_pos, axis=1)
+    inside = goal_distances < config.GOAL_RADIUS
     spread = np.linalg.norm(positions - center, axis=1)
     excursions = np.maximum(np.maximum(-positions, positions - config.SPACE_SIZE), 0)
     outside = np.any(excursions > 0, axis=1)
@@ -85,7 +107,10 @@ def observe(env, state_frame):
         "state_frame": state_frame,
         "centroid_distance": float(np.linalg.norm(center - env.goal_pos)),
         "max_goal_distance": float(goal_distances.max()),
-        "inside_goal": int(np.sum(goal_distances < config.GOAL_RADIUS)),
+        "inside_goal": int(np.sum(inside)),
+        "inside_goal_normal": int(np.sum(inside & (env.sheep_status == "Normal"))),
+        "inside_goal_type_a": int(np.sum(inside & (env.sheep_status == "A"))),
+        "inside_goal_type_b": int(np.sum(inside & (env.sheep_status == "B"))),
         "max_spread": float(spread.max()),
         "mean_spread": float(spread.mean()),
         "outside_count": int(outside.sum()),
@@ -192,15 +217,22 @@ def summarize(states, actions, success, step_calls, digest):
     }
 
 
-def diagnose(case, seed, max_steps, controller_kind="rule"):
+def diagnose(
+    case, seed, max_steps, controller_kind="rule", detector_factory=None,
+    controller_factory=None,
+):
     with temporary_config(
         USE_FIXED_SEED=True, RANDOM_SEED=seed,
         NUM_ABNORMAL_A=case["num_abnormal_a"],
         NUM_ABNORMAL_B=case["num_abnormal_b"],
         REPAIR_ENABLED=case["repair_enabled"], MAX_STEPS=max_steps,
     ):
-        env = SwarmEnv(controller=build_controller(controller_kind))
-        detector = make_detector()
+        controller = (
+            controller_factory() if controller_factory is not None
+            else build_controller(controller_kind)
+        )
+        env = SwarmEnv(controller=controller)
+        detector = (detector_factory or make_detector)()
         states = [observe(env, 0)]
         actions = []
         digest = hashlib.sha256()
@@ -223,6 +255,8 @@ def diagnose(case, seed, max_steps, controller_kind="rule"):
             if success:
                 break
             inside_after = np.linalg.norm(env.sheep_pos - env.goal_pos, axis=1) < config.GOAL_RADIUS
+            goal_entries = ~inside_before & inside_after
+            goal_exits = inside_before & ~inside_after
             states.append(observe(env, len(actions) + 1))
             actions.append({
                 "from_state_frame": len(actions),
@@ -254,14 +288,25 @@ def diagnose(case, seed, max_steps, controller_kind="rule"):
                 "llm_backend_error": env.decision_metadata.get("backend_error"),
                 "llm_rejection_reason": env.decision_metadata.get("rejection_reason"),
                 "action": env.control_action,
+                "approach_phase": env.decision_metadata.get("approach_phase"),
                 "target_id": env.target_sheep_id,
+                "target_status": (
+                    None if env.target_sheep_id is None
+                    else str(env.sheep_status[env.target_sheep_id])
+                ),
                 "navigation_point_x": float(env.navigation_point[0]),
                 "navigation_point_y": float(env.navigation_point[1]),
                 "drive_point_x": float(env.drive_point[0]),
                 "drive_point_y": float(env.drive_point[1]),
                 "drive_point_outside": bool(np.any((env.drive_point < 0) | (env.drive_point > config.SPACE_SIZE))),
-                "goal_exits": int(np.sum(inside_before & ~inside_after)),
-                "goal_entries": int(np.sum(~inside_before & inside_after)),
+                "goal_exits": int(np.sum(goal_exits)),
+                "goal_entries": int(np.sum(goal_entries)),
+                "goal_exits_normal": int(np.sum(goal_exits & (env.sheep_status == "Normal"))),
+                "goal_exits_type_a": int(np.sum(goal_exits & (env.sheep_status == "A"))),
+                "goal_exits_type_b": int(np.sum(goal_exits & (env.sheep_status == "B"))),
+                "goal_entries_normal": int(np.sum(goal_entries & (env.sheep_status == "Normal"))),
+                "goal_entries_type_a": int(np.sum(goal_entries & (env.sheep_status == "A"))),
+                "goal_entries_type_b": int(np.sum(goal_entries & (env.sheep_status == "B"))),
                 **motion_diagnostics(env, positions_before, velocities_before, dog_before),
             })
         summary = summarize(states, actions, success, step + 1, digest.hexdigest())

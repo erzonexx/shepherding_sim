@@ -1,5 +1,6 @@
 """Short-horizon counterfactual forecasts for existing shepherd modes."""
 
+import copy
 import numpy as np
 
 from control_types import ControlObservation
@@ -14,15 +15,18 @@ FORECAST_MODES = (
 )
 
 
-def forecast_modes(observation, settings):
+def forecast_modes(observation, settings, low_level_controller=None):
     horizon = max(1, int(settings.HIGH_LEVEL_FORECAST_FRAMES))
     return {
-        mode: _forecast_mode(observation, mode, horizon, settings)
+        mode: _forecast_mode(
+            observation, mode, horizon, settings, low_level_controller
+        )
         for mode in FORECAST_MODES
     }
 
 
-def _forecast_mode(observation, mode, horizon, settings):
+def _forecast_mode(observation, mode, horizon, settings,
+                   low_level_controller=None):
     positions = np.array(observation.sheep_positions, dtype=float, copy=True)
     velocities = observation.sheep_velocities
     if velocities is None or np.shape(velocities) != np.shape(positions):
@@ -47,7 +51,11 @@ def _forecast_mode(observation, mode, horizon, settings):
     minimum_boundary_margin = initial["boundary_margin"]
     splitting_frames = 0
     dog_travel = 0.0
-    controller = LowLevelController(settings)
+    controller = (
+        copy.copy(low_level_controller)
+        if low_level_controller is not None
+        else LowLevelController(settings)
+    )
 
     for offset in range(horizon):
         forecast_observation = ControlObservation(

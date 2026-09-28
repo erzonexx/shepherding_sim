@@ -109,8 +109,24 @@ class HighLevelControllerTests(unittest.TestCase):
         self.assertEqual(decision.mode, "COHESION_PRIORITY")
         self.assertEqual(decision.metadata["high_level_status"], "pending")
         self.assertEqual(controller.request_counter, 1)
+        self.assertEqual(
+            controller.pending_request.state_summary["rule_mode"],
+            "COHESION_PRIORITY",
+        )
         controller.decide(self.observation(1))
         self.assertEqual(controller.request_counter, 1)
+
+    def test_concurrent_alarm_fallback_and_prompt_use_guide_priority(self):
+        controller, _ = self.controller(latency=10)
+        decision = controller.decide(
+            self.observation(0, ("flock_splitting", "stagnation"))
+        )
+        self.assertEqual(decision.source, "rule")
+        self.assertEqual(decision.mode, "HARD_TO_GUIDE")
+        self.assertEqual(
+            controller.pending_request.state_summary["rule_mode"],
+            "HARD_TO_GUIDE",
+        )
 
     def test_valid_response_activates_then_expires(self):
         controller, _ = self.controller()
@@ -229,6 +245,47 @@ class HighLevelControllerTests(unittest.TestCase):
                 summary[key]["dog_to_drive_point"], expected_distance, places=3
             )
 
+    def test_request_candidates_match_predictive_low_level_targets(self):
+        controller, _ = self.controller(latency=10)
+        controller.decide(self.observation(
+            0,
+            ("flock_splitting", "stagnation"),
+            sheep_positions=[[30., 50.], [50., 50.], [69., 50.]],
+            sheep_velocities=[[0.7, 0.], [0., 0.], [0.7, 0.]],
+        ))
+        summary = controller.pending_request.state_summary
+        self.assertEqual(summary["cohesion_candidate"]["target_id"], 2)
+
+        controller, _ = self.controller(latency=10)
+        controller.decide(self.observation(
+            0,
+            ("flock_splitting", "stagnation"),
+            sheep_positions=[[20., 100.], [30., 100.]],
+            sheep_velocities=[[0.7, 0.], [-0.7, 0.]],
+        ))
+        summary = controller.pending_request.state_summary
+        self.assertEqual(summary["hard_to_guide_candidate"]["target_id"], 1)
+
+    def test_candidate_preview_preserves_low_level_target_hold(self):
+        controller, _ = self.controller(latency=10)
+        low = controller.low_level_controller
+        low.repair_target_mode = "HARD_TO_GUIDE"
+        low.repair_target_id = 0
+        low.repair_target_age = 5
+        observation = self.observation(
+            0,
+            ("flock_splitting", "stagnation"),
+            sheep_positions=[[20., 100.], [30., 100.]],
+            sheep_velocities=[[0.7, 0.], [-0.7, 0.]],
+        )
+        summary = controller._observe_state(
+            observation, tuple(observation.alarms)
+        )
+        self.assertEqual(summary["hard_to_guide_candidate"]["target_id"], 0)
+        self.assertEqual(low.repair_target_mode, "HARD_TO_GUIDE")
+        self.assertEqual(low.repair_target_id, 0)
+        self.assertEqual(low.repair_target_age, 5)
+
     def test_invalid_mode_is_rejected_with_rule_fallback(self):
         controller, _ = self.controller(
             latency=1, mapping={"flock_splitting": "TELEPORT"}
@@ -256,6 +313,65 @@ class HighLevelControllerTests(unittest.TestCase):
         self.assertEqual(
             decision.metadata["rejection_reason"], "hold_frames_out_of_range"
         )
+
+    def test_response_is_rejected_when_forecast_preference_reverses(self):
+        controller, _ = self.controller()
+        request_summary = {
+            "rule_mode": "HARD_TO_GUIDE",
+            "mode_forecasts": {
+                "COHESION_PRIORITY": {
+                    "centroid_progress": -3.355,
+                    "final_max_spread": 54.634,
+                },
+                "HARD_TO_GUIDE": {
+                    "centroid_progress": -11.514,
+                    "final_max_spread": 64.585,
+                },
+            },
+        }
+        current_summary = {
+            "rule_mode": "HARD_TO_GUIDE",
+            "cohesion_candidate": {"drive_point_boundary_margin": 5.0},
+            "mode_forecasts": {
+                "COHESION_PRIORITY": {
+                    "centroid_progress": -1.887,
+                    "final_max_spread": 76.526,
+                    "predicted_goal_exits": 0,
+                },
+                "HARD_TO_GUIDE": {
+                    "centroid_progress": 2.604,
+                    "final_max_spread": 42.236,
+                    "predicted_goal_exits": 1,
+                },
+            },
+        }
+        controller.pending_request = SimpleNamespace(
+            request_id="high-1",
+            trigger_frame=0,
+            alarms=("flock_splitting", "stagnation"),
+            state_summary=request_summary,
+        )
+        response = {
+            "request_id": "high-1",
+            "trigger_frame": 0,
+            "mode": "COHESION_PRIORITY",
+            "hold_frames": 25,
+        }
+
+        mode, hold, reason = controller._validate_response(
+            response, 22, controller.pending_request.alarms, current_summary
+        )
+        self.assertIsNone(mode)
+        self.assertIsNone(hold)
+        self.assertEqual(reason, "forecast_preference_reversed")
+
+        current_summary["mode_forecasts"]["COHESION_PRIORITY"]["final_max_spread"] = 40.0
+        self.assertFalse(controller._forecast_preference_reversed(
+            "COHESION_PRIORITY", request_summary, current_summary
+        ))
+        self.assertFalse(controller._forecast_preference_reversed(
+            "HARD_TO_GUIDE", request_summary, current_summary
+        ))
 
     def test_backend_error_falls_back_and_keeps_error_metadata(self):
         controller = HighLevelController(
@@ -290,6 +406,26 @@ class HighLevelControllerTests(unittest.TestCase):
         self.assertEqual(single.metadata["high_level_status"], "rule_only")
         self.assertEqual(concurrent.metadata["high_level_status"], "pending")
         self.assertEqual(controller.request_counter, 1)
+
+    def test_debounced_concurrent_event_submits_once_and_rearms(self):
+        settings = self.settings(
+            HIGH_LEVEL_CONCURRENT_MIN_FRAMES=3,
+            HIGH_LEVEL_ONE_REQUEST_PER_EPISODE=True,
+        )
+        backend = ConcurrentOnlyBackend(latency_frames=1, hold_frames=1)
+        controller = HighLevelController(
+            low_level_controller=LowLevelController(settings),
+            backend=backend,
+            settings=settings,
+        )
+        both = ("flock_splitting", "stagnation")
+        for frame in range(8):
+            controller.decide(self.observation(frame, both))
+        self.assertEqual(controller.request_counter, 1)
+        controller.decide(self.observation(8, ("stagnation",)))
+        for frame in range(9, 12):
+            controller.decide(self.observation(frame, both))
+        self.assertEqual(controller.request_counter, 2)
 
     def test_concurrent_request_survives_while_selected_alarm_remains(self):
         backend = ConcurrentOnlyBackend(

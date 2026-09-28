@@ -2,6 +2,7 @@ import unittest
 
 import pandas as pd
 
+from run_experiments import count_high_level_override_frames
 from tools.analyze_experiment_pair import compare_frames, exact_signed_mean_pvalue
 
 
@@ -40,6 +41,23 @@ class ExperimentAnalysisTests(unittest.TestCase):
 
     def test_zero_differences_have_unit_pvalue(self):
         self.assertEqual(exact_signed_mean_pvalue([0, 0, 0]), 1.0)
+
+    def test_override_frames_exclude_llm_choices_matching_rule_fallback(self):
+        control = pd.DataFrame([
+            {"decision_source": "rule", "alarms": "flock_splitting;stagnation",
+             "current_mode": "HARD_TO_GUIDE"},
+            {"decision_source": "deepseek", "alarms": "flock_splitting;stagnation",
+             "current_mode": "HARD_TO_GUIDE"},
+            {"decision_source": "deepseek", "alarms": "flock_splitting;stagnation",
+             "current_mode": "COHESION_PRIORITY"},
+            {"decision_source": "deepseek", "alarms": "stagnation",
+             "current_mode": "HARD_TO_GUIDE"},
+            {"decision_source": "deepseek", "alarms": "stagnation",
+             "current_mode": "COHESION_PRIORITY"},
+        ])
+
+        self.assertEqual(count_high_level_override_frames(control, True), 2)
+        self.assertEqual(count_high_level_override_frames(control, False), 4)
 
 
 if __name__ == "__main__":
