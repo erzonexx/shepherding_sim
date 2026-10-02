@@ -225,6 +225,8 @@ mean distance from flock centroid    > 15
 Initial sheep positions use a Gaussian spread with standard deviation 15.
 Because this is a broad initialization, a run may report splitting from frame
 zero; that report describes the initial geometry, not necessarily a Type B effect.
+The interactive run hides splitting-only terminal warnings during the first
+30 frames; detection, control decisions, and saved alarms are unchanged.
 This geometric alarm does not identify sheep types: Type B can increase spread
 without crossing both danger thresholds. Use the matched detector screen in
 `tests/anomaly_behavior/run_detector_screen.py` to assess that distinction.
@@ -299,10 +301,14 @@ python -m unittest discover -s tests -q
 ## Current Evidence
 
 The rule controller is the stable baseline. Across two independent
-40-seed C08 cohorts, immediate DeepSeek succeeded in 76/80 runs versus
-75/80 for the rule controller: two rescues and one regression. Only
-19/80 LLM runs actually changed the applied rule mode. This does not
-establish a reliable LLM advantage.
+40-seed C08 cohorts, goal-reaching within 2,000 frames was 25/80 without
+alarm-driven repair, 75/80 with rule repair, and 76/80 with immediate
+DeepSeek. Rule repair rescued 50 no-repair timeouts without a regression;
+DeepSeek had two rescues and one regression relative to rule repair.
+Only 19/80 LLM runs actually changed the applied rule mode. All five
+rule runs that timed out at 2,000 frames completed when rerun with a
+4,000-frame limit. These results support rule repair but do not
+establish a reliable additional LLM advantage.
 
 Detailed experiments, ablations, and local log paths are kept in
 [Experiment Notes](tools/experiment_notes.md).

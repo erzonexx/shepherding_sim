@@ -166,6 +166,21 @@ alarm, often targeting Type B sheep throughout. Several, but not all, runs also
 spent many cohesion frames targeting sheep closer to the goal than the flock
 centroid; overlong repair is a concern, not a proven single cause.
 
+An independent startup-grace screen on seeds 2801-2840 kept the existing
+thresholds and rule controller but suppressed the splitting alarm during
+frames 0-29. At a 2,000-frame limit, normal success stayed 40/40, Type B
+fell from 38/40 to 35/40, and mixed stress changed from 36/40 to 37/40
+while mean capped frames increased from 983.6 to 1018.0. The three Type B
+regressions (2807, 2829, 2838) first changed control mode at frame 0.
+The same test on independent seeds 2901-2940 kept normal success at 40/40,
+changed Type B from 34/40 to 35/40 (two rescues, one regression), and
+mixed stress from 36/40 to 37/40. Type B mean capped frames rose from
+1048.9 to 1135.3. Combined across both cohorts, Type B success was
+72/80 versus 70/80 and mean capped frames approximately 1141.7 versus
+1195.9; mixed stress was 72/80 versus 74/80 with nearly unchanged mean
+capped frames. The results trade performance across scenarios, so do not
+adopt a blanket 30-frame splitting-alarm grace period.
+
 The current rule repair remains useful: on seeds 120-159 with a 1,000-step cap,
 Type B improved from 9/40 without repair to 18/40 with repair, and mixed from
 10/40 to 19/40. A one-parameter-at-a-time geometry screen on seeds 100-119

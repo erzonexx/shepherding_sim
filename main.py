@@ -102,10 +102,11 @@ def main(argv=None):
         # 1. run the detector to analyze the flock's state and record metrics
         alarms, metrics, report = detector.detect(env.sheep_pos, env.goal_pos)
         env.record_frame_metrics(metrics)
-        if report['is_danger']:
-            # to avoid spamming too many warnings, we only print every 10 frames when in danger
-            if step_count % 10 == 0:
-                print(f"🚨 [Frame {step_count}] Danger Warning! Type: {report['danger_type']}. Desc: {report['description']}")
+        initial_dispersion_only = (
+            step_count < 30 and report['danger_types'] == ['flock_splitting']
+        )
+        if report['is_danger'] and not initial_dispersion_only and step_count % 10 == 0:
+            print(f"🚨 [Frame {step_count}] Danger Warning! Type: {report['danger_type']}. Desc: {report['description']}")
 
         # 2. physics environment simulation one frame
         reached_goal = env.step(alarms)

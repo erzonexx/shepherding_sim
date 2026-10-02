@@ -3,6 +3,17 @@
 These are local simulation results, not universal performance claims.
 Paths below are relative to the project root; generated logs are ignored by Git.
 
+- A three-arm comparison on the same C08 stress seeds 2201-2240 and
+  2501-2540 (3 Type A + 3 Type B, 2,000-frame limit) reached the goal
+  within the limit in 25/80 runs without alarm-driven repair, 75/80
+  with rule repair, and 76/80 with immediate DeepSeek. Mean capped frames
+  were 1624.7, 946.3, and 941.9, respectively. Rule repair rescued 50
+  no-repair timeouts with no success-to-timeout regressions; DeepSeek
+  rescued two rule timeouts and introduced one. The no-repair controller
+  still drives and collects sheep. The added C07 summaries are in
+  `logs/experiments/three_arm_2201_2240_no_repair/summary.csv` and
+  `logs/experiments/three_arm_2501_2540_no_repair/summary.csv`; the
+  matched C08 rule and DeepSeek summaries are listed below.
 - In a fresh 80-seed, 2,000-frame paired rule experiment, enabling
   alarm-driven repair raised Type B success from 19/80 to 67/80 and C08
   stress from 25/80 to 76/80; normal went from 78/80 to 80/80 and Type A
@@ -175,7 +186,117 @@ those 19 runs changed its path but not its completion time. These are
 descriptive intervention categories, not evidence that LLM reasoning is
 better than a deterministic timing or mode-selection policy.
 
+The 75/80 and 76/80 success counts mean goal reached within the
+2,000-frame evaluation limit, not eventual success or failure. Across
+the same 80 pairs, mean completion time capped at 2,000 frames was
+946.3 for rule and 941.9 for DeepSeek (paired difference -4.4 frames);
+DeepSeek was faster in eight pairs, equal in 62, and slower in ten.
+The paired bootstrap 95% interval for that mean difference was about
+-53.9 to +43.4 frames, so this sample does not resolve a speed advantage.
+The five rule timeouts (seeds 2216, 2230, 2238, 2505, 2518) were
+rerun unchanged except for a 4,000-frame limit; their first 2,000
+frames matched the original runs, and all reached the goal at frames
+2056, 2494, 2787, 2051, and 2144, respectively. Thus all 80 rule
+runs in these cohorts finished within 4,000 frames. The matching
+DeepSeek runs were not rerun at 4,000 frames, so no 4,000-frame
+rule-versus-LLM comparison is available. Rerun summaries are in
+`logs/experiments/failure_horizon_4000/summary.csv`.
+
 Earlier development evidence used a different Type A implementation: predictive
 repair targeting changed 57/80 rule successes to 61/80, and an older 10-seed
 C08 DeepSeek comparison changed 6/10 rule successes to 8/10. Those numbers
 should not be combined with the current-model results above.
+
+## Explaining the poster result to a supervisor
+
+The earlier poster reported a matched 10-run rule-versus-LLM comparison:
+6/10 versus 8/10 reached the goal, with lower reported capped frames
+(1142.9 versus 951.0) and danger frames (423.2 versus 335.6) for the LLM
+arm. These are preliminary observations for that experiment, not a claim
+of a reproducible LLM advantage. The development notes identify a different
+Type A implementation for the older 10-seed comparison. Its exact raw
+poster-summary file has not been located here, so further differences in
+the controller, scenarios, or metrics should not be asserted without it.
+
+The newer matched C08 cohorts use the current model and a strengthened
+rule controller. Across 80 seeds at a 2,000-frame limit, no alarm-driven
+repair, rule repair, and immediate DeepSeek reached the goal 25/80, 75/80,
+and 76/80 times. The rule-to-LLM comparison had two rescues and one
+regression; mean capped completion improved by only about 4.4 frames,
+with a paired bootstrap interval spanning zero. Thus the defensible
+current finding is that anomaly monitoring and rule repair have a large
+effect, while the incremental benefit of the LLM under these fixed
+repair modes has not been established. The earlier 10-run improvement
+is neither fabricated nor confirmed as a general effect: it was an
+early, small-sample, different-version result. Do not directly subtract
+or pool its percentages with the current 80-run comparison.
+
+For a supervisor update: present the poster data as preliminary results
+from the earlier prototype, explicitly disclose the changed model and
+stronger baseline, and present the larger matched comparison as the
+current evidence. Ask whether the near-term objective is to report the
+validated anomaly-repair framework with an exploratory LLM layer, or to
+redesign the high-level decision problem in future work so the LLM has
+an independently testable role. Do not claim that the present experiment
+proves the LLM superior to rule control.
+
+## Higher abnormal-population pilot (2026-10-02)
+
+Using the existing custom scenario, unchanged per-type behavior parameters,
+rule repair, and matched seeds 3001-3010, both 3 Type A + 3 Type B and
+7 Type A + 7 Type B completed 10/10 runs within 2,000 frames. There are
+20 sheep total, so the abnormal fraction rose from 30% to 70%. Mean
+completion frames rose from 826.1 to 1153.6; mean danger frames rose
+from 236.4 to 387.4. The higher-count arm was slower on eight seeds and
+faster on two. This small pilot indicates more time pressure, not a
+demonstrated success-rate deficit or an LLM benefit. No API was called.
+
+The current initializer already shuffles sheep identities before assigning
+fixed A/B counts. Within each type, behavior coefficients are identical.
+Randomizing which sheep has which type therefore already exists;
+independent type probabilities or varying per-sheep severity would be
+additional hypotheses, not features implemented by this pilot. Each type
+stays fixed during a run. Increasing counts alone does not demonstrate a
+need for a more capable high-level policy.
+
+The paired summaries and run metadata are in
+`logs/experiments/population_stress_3001_3010/a3_b3/summary.csv` and
+`logs/experiments/population_stress_3001_3010/a7_b7/summary.csv`.
+
+## Rule versus DeepSeek at 7A + 7B (2026-10-02)
+
+Twenty matched seeds 3001-3020 compared rule repair with immediate
+DeepSeek requests on concurrent alarms. Both arms used 20 sheep, 7 A +
+7 B, a 2,000-frame limit, the same source files and case settings, and
+identical logged initial states on all 20 pairs. The first ten seeds
+overlap the higher-population pilot above; this is not an independent
+replication of that pilot. API caching was disabled, with at most one
+request per concurrent-alarm episode. Recorded responses used
+`deepseek-v4-flash` and prompt `shepherd-mode-v9-aligned-candidates`.
+
+Both controllers completed 20/20 within the limit. Mean completion
+frames were 1004.45 for rule repair and 1026.05 for DeepSeek (+21.6,
+about +2.15%). DeepSeek was faster in four pairs, equal in twelve, and
+slower in four. Mean danger frames were 332.65 versus 338.35 (+5.7),
+and mean maximum spread was 68.914 versus 66.5435 (-2.3705).
+The exploratory paired sign-randomization p-value for completion-frame
+differences was 0.7578125. This small cohort does not establish a
+completion-time or success-rate advantage from the LLM.
+
+DeepSeek submitted 44 requests; 39 responses were recorded, of which
+30 were accepted and nine rejected. The recorded responses had no
+backend errors and averaged about 0.937 seconds of latency. Cache hits
+were zero. Actual non-rule mode execution occurred in eight runs,
+totaling 184 frames. The 39 responses recorded 70,033 input tokens and
+1,869 output tokens. These counts exclude any usage from requests
+without a recorded response.
+
+Rule results are in
+`logs/experiments/population_stress_3001_3020/rule/summary.csv`;
+valid API results are in
+`logs/experiments/population_stress_3001_3020/deepseek_api/summary.csv`.
+The existing pair-analysis tool saved `comparison.csv` and
+`comparison.json` in their parent directory. An initial attempt saved
+under `deepseek/` encountered connection errors and executed rule
+fallback throughout; that batch is retained for diagnosis and excluded
+from this LLM comparison.
