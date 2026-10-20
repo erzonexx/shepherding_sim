@@ -6,7 +6,7 @@ import config
 from control_types import ControlObservation
 from low_level_controller import LowLevelController
 from run_experiments import temporary_config
-from tests.anomaly_behavior.run_cohesion_direction_trial import (
+from experiments.anomaly_behavior.run_cohesion_direction_trial import (
     UnitCohesionController,
 )
 

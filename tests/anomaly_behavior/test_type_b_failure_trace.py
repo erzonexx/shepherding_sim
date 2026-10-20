@@ -1,6 +1,6 @@
 import unittest
 
-from tests.anomaly_behavior.run_type_b_failure_trace import (
+from experiments.anomaly_behavior.run_type_b_failure_trace import (
     summarize_trace,
     target_runs,
 )

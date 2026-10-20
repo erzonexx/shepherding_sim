@@ -32,6 +32,7 @@ class MainOptionsTests(unittest.TestCase):
                     env = SwarmEnv(controller=controller)
                     self.assertEqual(int(np.sum(env.sheep_status == "A")), counts[0])
                     self.assertEqual(int(np.sum(env.sheep_status == "B")), counts[1])
+                    self.assertEqual(int(np.sum(env.sheep_status == "C")), counts[2])
                     snapshots.append((env.sheep_pos, env.dog_pos, env.goal_pos, env.sheep_status))
                     env.close()
             for rule_state, llm_state in zip(*snapshots):
@@ -40,11 +41,13 @@ class MainOptionsTests(unittest.TestCase):
     def test_default_run_preserves_config_settings(self):
         with temporary_config(
             NUM_ABNORMAL_A=1, NUM_ABNORMAL_B=5, REPAIR_ENABLED=False,
+            NUM_ABNORMAL_C=2,
             CONTROLLER_KIND="mock-llm", MAX_STEPS=123, USE_FIXED_SEED=False,
             SAVE_ANIMATION_MP4=True,
         ):
             apply_run_settings(parse_args([]))
             self.assertEqual((config.NUM_ABNORMAL_A, config.NUM_ABNORMAL_B), (1, 5))
+            self.assertEqual(config.NUM_ABNORMAL_C, 2)
             self.assertFalse(config.REPAIR_ENABLED)
             self.assertFalse(config.USE_FIXED_SEED)
             self.assertTrue(config.SAVE_ANIMATION_MP4)
@@ -54,10 +57,11 @@ class MainOptionsTests(unittest.TestCase):
     def test_custom_population_overrides_preset_without_changing_repair(self):
         with temporary_config():
             apply_run_settings(parse_args([
-                "--scenario", "stress", "--abnormal-a", "1", "--abnormal-b", "6",
+                "--scenario", "stress", "--abnormal-a", "1", "--abnormal-b", "6", "--abnormal-c", "4",
                 "--no-repair", "--max-steps", "100", "--no-video",
             ]))
             self.assertEqual((config.NUM_ABNORMAL_A, config.NUM_ABNORMAL_B), (1, 6))
+            self.assertEqual(config.NUM_ABNORMAL_C, 4)
             self.assertFalse(config.REPAIR_ENABLED)
             self.assertEqual(config.MAX_STEPS, 100)
             self.assertFalse(config.SAVE_ANIMATION_MP4)
@@ -65,6 +69,8 @@ class MainOptionsTests(unittest.TestCase):
     def test_invalid_conditions_rejected_before_simulation(self):
         for argv in (
             ["--abnormal-a", "-1"],
+            ["--abnormal-c", "-1"],
+            ["--abnormal-a", "7", "--abnormal-b", "7", "--abnormal-c", "7"],
             ["--abnormal-a", "20", "--abnormal-b", "1"],
             ["--max-steps", "0"],
             ["--seed", "-1"],

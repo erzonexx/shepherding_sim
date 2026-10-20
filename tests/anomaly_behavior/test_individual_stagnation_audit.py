@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from tests.anomaly_behavior.run_individual_stagnation_audit import (
+from experiments.anomaly_behavior.run_individual_stagnation_audit import (
     stalled_outside_goal,
 )
 

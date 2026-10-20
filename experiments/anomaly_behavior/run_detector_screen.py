@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import config
-from tests.anomaly_behavior.behavior_characterization import (
+from experiments.anomaly_behavior.behavior_characterization import (
     splitting_trajectory_screen,
     stress_alarm_screen,
 )

@@ -13,6 +13,7 @@ import httpx2
 from openai import OpenAI
 
 from high_level_controller import HighLevelRequest
+from run_experiments import temporary_config
 from responses_api_backend import DeepSeekBackend, OpenAIBackend
 
 
@@ -87,14 +88,14 @@ class FakeClient:
 
 
 class ResponsesAPIBackendTests(unittest.TestCase):
-    def request(self, request_id="high-1"):
+    def request(self, request_id="high-1", alarms=("flock_splitting",)):
         return HighLevelRequest(
             request_id=request_id,
             trigger_frame=10,
-            alarms=("flock_splitting",),
-            primary_alarm="flock_splitting",
+            alarms=alarms,
+            primary_alarm=alarms[0] if alarms else "none",
             state_summary={
-                "alarms": ["flock_splitting"],
+                "alarms": list(alarms),
                 "max_spread": 45.0,
                 "max_spread_change": 5.0,
             },
@@ -136,6 +137,123 @@ class ResponsesAPIBackendTests(unittest.TestCase):
         self.assertEqual(len(client.responses.calls), 1)
         self.assertTrue(cached["cache_hit"])
         self.assertEqual(cached["request_id"], "high-2")
+
+    def test_target_is_preserved_in_api_result_and_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient(output={"mode": "HARD_TO_GUIDE", "target_sheep_id": 3,
+                                        "hold_frames": 30, "reason": "nearby lagging sheep"})
+            backend = self.backend(directory, client)
+            backend.submit(self.request("high-1", alarms=("stagnation",)))
+            response = backend.poll("high-1", 11)
+            backend.submit(self.request("high-2", alarms=("stagnation",)))
+            cached = backend.poll("high-2", 12)
+        self.assertEqual(response["target_sheep_id"], 3)
+        self.assertEqual(cached["target_sheep_id"], 3)
+        self.assertTrue(cached["cache_hit"])
+        schema = client.responses.calls[0]["text"]["format"]["schema"]
+        self.assertIn("target_sheep_id", schema["required"])
+        self.assertEqual(schema["properties"]["target_sheep_id"]["type"], ["integer", "null"])
+
+    def test_mode_only_preserves_state_and_explicitly_restricts_target_permission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient()
+            full = self.backend(directory, client)
+            full.submit(self.request())
+            full.poll("high-1", 11)
+            with temporary_config(HIGH_LEVEL_TARGET_SELECTION_ENABLED=False):
+                restricted = self.backend(directory, client)
+            self.assertNotEqual(full._cache_key(self.request().state_summary),
+                                restricted._cache_key(self.request().state_summary))
+            restricted.submit(self.request("high-2"))
+            result = restricted.poll("high-2", 11)
+            self.assertFalse(result["cache_hit"])
+            self.assertTrue(result["prompt_version"].endswith("-mode-only-v2"))
+            first, second = client.responses.calls
+            self.assertTrue(second["instructions"].startswith(first["instructions"]))
+            self.assertIn("Always return target_sheep_id as JSON null", second["instructions"])
+            self.assertEqual(first["input"], second["input"])
+            schema = second["text"]["format"]["schema"]
+            self.assertEqual(schema["properties"]["target_sheep_id"], {"type": "null"})
+
+    def test_target_only_restricts_mode_schema_and_separates_cache(self):
+        request = self.request(alarms=("stagnation",))
+        request.state_summary["rule_mode"] = "HARD_TO_GUIDE"
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient(output={"mode": "HARD_TO_GUIDE", "target_sheep_id": 3,
+                                        "hold_frames": 30, "reason": "nearby target"})
+            full = self.backend(directory, client)
+            full.submit(request)
+            full.poll("high-1", 11)
+            with temporary_config(HIGH_LEVEL_MODE_SELECTION_ENABLED=False):
+                restricted = self.backend(directory, client)
+            self.assertNotEqual(full._cache_key(request.state_summary),
+                                restricted._cache_key(request.state_summary))
+            restricted.submit(request)
+            result = restricted.poll("high-1", 11)
+            self.assertFalse(result["cache_hit"])
+            self.assertEqual(result["target_sheep_id"], 3)
+            self.assertTrue(result["prompt_version"].endswith("-target-only-v1"))
+            first, second = client.responses.calls
+            self.assertEqual(first["input"], second["input"])
+            self.assertTrue(second["instructions"].startswith(first["instructions"]))
+            self.assertIn("Always copy rule_mode exactly", second["instructions"])
+            schema = second["text"]["format"]["schema"]["properties"]
+            self.assertEqual(schema["mode"]["enum"], ["HARD_TO_GUIDE"])
+            self.assertEqual(schema["target_sheep_id"]["type"], ["integer", "null"])
+            self.assertEqual(restricted._response_format("COHESION_PRIORITY")
+                             ["schema"]["properties"]["mode"]["enum"], ["COHESION_PRIORITY"])
+            with self.assertRaises(ValueError):
+                restricted._response_format()
+
+    def test_mode_schema_matches_each_request_alarm_combination(self):
+        cases = (((), ["TARGET_TRACKING"]),
+                 (("flock_splitting",), ["TARGET_TRACKING", "COHESION_PRIORITY"]),
+                 (("stagnation",), ["TARGET_TRACKING", "HARD_TO_GUIDE"]),
+                 (("flock_splitting", "stagnation"), ["TARGET_TRACKING", "COHESION_PRIORITY", "HARD_TO_GUIDE"]))
+        with tempfile.TemporaryDirectory() as directory, temporary_config(LLM_CACHE_ENABLED=False):
+            for alarms, expected in cases:
+                with self.subTest(alarms=alarms):
+                    client = FakeClient(output={"mode": "TARGET_TRACKING", "hold_frames": 30})
+                    backend = self.backend(directory, client)
+                    request = self.request(alarms=alarms)
+                    request.state_summary["alarms"] = ["unknown_summary_alarm"]
+                    backend.submit(request)
+                    result = backend.poll("high-1", 11)
+                    self.assertNotIn("backend_error", result)
+                    schema = client.responses.calls[0]["text"]["format"]["schema"]
+                    self.assertEqual(schema["properties"]["mode"]["enum"], expected)
+                    self.assertIn("forecasts for other modes are context", client.responses.calls[0]["instructions"])
+                    backend.close()
+
+    def test_provider_ignoring_mode_enum_is_rejected_and_not_cached(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient(output={"mode": "HARD_TO_GUIDE", "hold_frames": 30})
+            backend = self.backend(directory, client)
+            for request_id in ("high-1", "high-2"):
+                backend.submit(self.request(request_id))
+                result = backend.poll(request_id, 11)
+                self.assertIn("not admissible", result["backend_error"])
+            self.assertEqual(len(client.responses.calls), 2)
+            self.assertFalse(backend.cache_path.exists())
+
+    def test_cache_respects_authoritative_request_alarms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient(output={"mode": "TARGET_TRACKING", "hold_frames": 30})
+            backend = self.backend(directory, client)
+            for request_id, alarms in (("high-1", ("flock_splitting",)),
+                                       ("high-2", ("stagnation",))):
+                request = self.request(request_id, alarms=alarms)
+                request.state_summary["alarms"] = []
+                backend.submit(request)
+                result = backend.poll(request_id, 11)
+                self.assertFalse(result["cache_hit"])
+            self.assertEqual(len(client.responses.calls), 2)
+
+    def test_target_only_cannot_request_a_rule_mode_without_its_alarm(self):
+        with tempfile.TemporaryDirectory() as directory, temporary_config(HIGH_LEVEL_MODE_SELECTION_ENABLED=False):
+            backend = self.backend(directory, FakeClient())
+            with self.assertRaisesRegex(ValueError, "admissible rule_mode"):
+                backend._response_format("HARD_TO_GUIDE", alarms=("flock_splitting",))
 
     def test_api_error_becomes_backend_result(self):
         with tempfile.TemporaryDirectory() as directory:

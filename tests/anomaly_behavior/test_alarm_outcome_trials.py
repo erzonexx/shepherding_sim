@@ -1,6 +1,6 @@
 import unittest
 
-from anomaly_behavior.run_alarm_outcome_trials import profile_alarms, summarize_pairs
+from experiments.anomaly_behavior.run_alarm_outcome_trials import profile_alarms, summarize_pairs
 
 
 def action(frame, alarm):

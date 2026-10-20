@@ -2,8 +2,6 @@ import argparse
 import csv
 from contextlib import contextmanager
 from datetime import datetime
-import hashlib
-import json
 import random
 from pathlib import Path
 import time
@@ -17,6 +15,9 @@ from environment import SwarmEnv
 from plot_analysis import plot_metrics_from_files
 from high_level_controller import build_controller
 from low_level_controller import rule_mode_for_alarms
+from experiment_audit import (SOURCE_NAMES, INPUT_SEMANTICS_VERSION, backend_snapshot,
+                              config_snapshot, source_hashes, write_json_exclusive,
+                              begin_run_record, finish_run_record)
 
 
 CASES = [
@@ -92,10 +93,12 @@ CONFIG_KEYS = [
     "MAX_STEPS",
     "NUM_ABNORMAL_A",
     "NUM_ABNORMAL_B",
+    "NUM_ABNORMAL_C",
     "REPAIR_ENABLED",
     "SAVE_TRAJECTORY_PNG",
     "SAVE_ANIMATION_MP4",
     "MAX_LOG_FILES",
+    "LOG_RETENTION_ENABLED",
     "GOAL_RETENTION_ENABLED",
     "GOAL_RETENTION_INNER_FRACTION",
     "GOAL_RETENTION_WEIGHT",
@@ -111,9 +114,13 @@ CONFIG_KEYS = [
     "HIGH_LEVEL_MAX_RESPONSE_AGE_FRAMES",
     "HIGH_LEVEL_RETRY_FRAMES",
     "HIGH_LEVEL_CONTEXT_FRAMES",
+    "HIGH_LEVEL_EXPLICIT_EXECUTION",
+    "HIGH_LEVEL_TARGET_HANDOFF_ENABLED",
     "HIGH_LEVEL_FORECAST_FRAMES",
     "HIGH_LEVEL_CONCURRENT_MIN_FRAMES",
     "HIGH_LEVEL_ONE_REQUEST_PER_EPISODE",
+    "HIGH_LEVEL_TARGET_SELECTION_ENABLED",
+    "HIGH_LEVEL_MODE_SELECTION_ENABLED",
     "REPAIR_TARGET_SELECTION_ENABLED",
     "COHESION_TARGET_MIN_HOLD_FRAMES",
     "HARD_TO_GUIDE_TARGET_MIN_HOLD_FRAMES",
@@ -131,6 +138,14 @@ CONFIG_KEYS = [
     "DEEPSEEK_BASE_URL",
     "DEEPSEEK_CACHE_PATH",
     "DEEPSEEK_REASONING_EFFORT",
+    "VLLM_MODEL",
+    "VLLM_BASE_URL",
+    "VLLM_CACHE_PATH",
+    "VLLM_MAX_OUTPUT_TOKENS",
+    "VLLM_COMPACT_OUTPUT",
+    "VLLM_INPUT_FORMAT",
+    "VLLM_PREFIX_PRIMING",
+    "VLLM_PREFIX_TOKEN_FILE",
 ]
 
 
@@ -174,74 +189,87 @@ def run_case(
         MAX_STEPS=max_steps,
         NUM_ABNORMAL_A=case["num_abnormal_a"],
         NUM_ABNORMAL_B=case["num_abnormal_b"],
+        NUM_ABNORMAL_C=case.get("num_abnormal_c", 0),
         REPAIR_ENABLED=case["repair_enabled"],
         SAVE_TRAJECTORY_PNG=save_visuals,
         SAVE_ANIMATION_MP4=save_video,
         MAX_LOG_FILES=max_log_files,
         LLM_CACHE_ENABLED=llm_cache_enabled,
+        CONTROLLER_KIND=controller_kind,
     ):
         env = SwarmEnv(controller=build_controller(controller_kind))
-        detector = make_detector()
-        reached = False
-        final_step = max_steps
+        try:
+            timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{case['case']}"
+            manifest_path = Path(config.CONTROL_LOG_DIR) / f"run_{timestamp}.json"
+            manifest = begin_run_record(manifest_path, env.controller, config,
+                                        case=case, seed=seed, controller_kind=controller_kind)
+            run_started = time.perf_counter()
+            detector = make_detector()
+            reached = False
+            final_step = max_steps
 
-        for step in range(max_steps):
-            alarms, metrics, _ = detector.detect(env.sheep_pos, env.goal_pos)
-            env.record_frame_metrics(metrics)
-            reached = env.step(alarms)
-            final_step = step + 1
-            if (
-                controller_kind in ("openai", "deepseek")
-                and getattr(env.controller, "pending_request", None) is not None
-            ):
-                time.sleep(config.LLM_PENDING_POLL_SECONDS)
-            if reached:
-                break
+            for step in range(max_steps):
+                alarms, metrics, _ = detector.detect(env.sheep_pos, env.goal_pos)
+                env.record_frame_metrics(metrics)
+                reached = env.step(alarms)
+                final_step = step + 1
+                if (
+                    controller_kind in ("openai", "deepseek", "vllm")
+                    and getattr(env.controller, "pending_request", None) is not None
+                ):
+                    time.sleep(config.LLM_PENDING_POLL_SECONDS)
+                if reached:
+                    break
 
-        timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{case['case']}"
-        env.save_data_to_parquet(timestamp)
-        env.save_control_to_parquet(timestamp)
+            env.save_data_to_parquet(timestamp)
+            env.save_control_to_parquet(timestamp)
 
-        if save_visuals or save_video:
-            from matplotlib import pyplot as plt
-            from visualizer import Visualizer
+            if save_visuals or save_video:
+                from matplotlib import pyplot as plt
+                from visualizer import Visualizer
 
-            vis = Visualizer(env)
-            if save_visuals:
-                vis.save_trajectory(env, timestamp)
-            if save_video:
-                vis.save_animation_mp4(env, timestamp)
-            plt.close(vis.fig)
+                vis = Visualizer(env)
+                if save_visuals:
+                    vis.save_trajectory(env, timestamp)
+                if save_video:
+                    vis.save_animation_mp4(env, timestamp)
+                plt.close(vis.fig)
 
-        data_path = Path(config.DATA_LOG_DIR) / f"data_{timestamp}.parquet"
-        control_path = Path(config.CONTROL_LOG_DIR) / f"control_{timestamp}.parquet"
-        video_path = Path(config.VIDEO_LOG_DIR) / f"animation_{timestamp}.mp4"
-        trajectory_path = Path(config.VISUAL_LOG_DIR) / f"trajectory_{timestamp}.png"
+            data_path = Path(config.DATA_LOG_DIR) / f"data_{timestamp}.parquet"
+            control_path = Path(config.CONTROL_LOG_DIR) / f"control_{timestamp}.parquet"
+            video_path = Path(config.VIDEO_LOG_DIR) / f"animation_{timestamp}.mp4"
+            trajectory_path = Path(config.VISUAL_LOG_DIR) / f"trajectory_{timestamp}.png"
 
-        if save_analysis:
-            plot_metrics_from_files([str(data_path)], config.ANALYSIS_LOG_DIR)
+            if save_analysis:
+                plot_metrics_from_files([str(data_path)], config.ANALYSIS_LOG_DIR)
 
-        row = summarize_case(
-            case,
-            seed,
-            timestamp,
-            data_path,
-            control_path,
-            video_path,
-            trajectory_path,
-            reached,
-            final_step,
-            env.goal_pos,
-        )
-        row["Controller"] = controller_kind
-        env.close()
-        return row
+            row = summarize_case(
+                case,
+                seed,
+                timestamp,
+                data_path,
+                control_path,
+                video_path,
+                trajectory_path,
+                reached,
+                final_step,
+                env.goal_pos,
+            )
+            row["Controller"] = controller_kind
+            finish_run_record(manifest_path, manifest, success=reached, frames=final_step,
+                              wall_seconds=time.perf_counter() - run_started,
+                              data=str(data_path), control=str(control_path))
+            row["RunMetadata"] = str(manifest_path)
+            row["RequestsAudit"] = manifest.get("requests_audit", "")
+            return row
+        finally:
+            env.close()
 
 
 def count_high_level_override_frames(control, repair_enabled):
     active = control.loc[control["decision_source"] != "rule"]
     return sum(
-        row.current_mode
+        bool(getattr(row, "llm_target_override", False)) or row.current_mode
         != rule_mode_for_alarms(
             () if row.alarms == "none" else tuple(row.alarms.split(";")),
             repair_enabled,
@@ -311,8 +339,11 @@ def summarize_case(
         (control["high_level_status"] == "rejected")
         & control["llm_request_id"].notna()
     ].drop_duplicates("llm_request_id")
+    delegated_responses = control.loc[
+        (control['high_level_status'] == 'delegated') & control['llm_request_id'].notna()
+    ].drop_duplicates('llm_request_id')
     returned_responses = pd.concat(
-        [accepted_responses, rejected_responses], ignore_index=True
+        [accepted_responses, rejected_responses, delegated_responses], ignore_index=True
     ).drop_duplicates("llm_request_id")
     evaluated_selections = accepted_responses.loc[
         accepted_responses["llm_reference_mode"].notna()
@@ -333,6 +364,7 @@ def summarize_case(
         "Purpose": case["purpose"],
         "A": case["num_abnormal_a"],
         "B": case["num_abnormal_b"],
+        "C": case.get("num_abnormal_c", 0),
         "Repair": case["repair_enabled"],
         "Success": reached,
         "Frames": final_step,
@@ -352,9 +384,13 @@ def summarize_case(
         "HighLevelResponses": len(returned_responses),
         "HighLevelAccepted": len(accepted_responses),
         "HighLevelRejected": len(rejected_responses),
+        "HighLevelDelegated": len(delegated_responses),
         "HighLevelActiveFrames": int((control["decision_source"] != "rule").sum()),
         "HighLevelOverrideFrames": count_high_level_override_frames(
             control, case["repair_enabled"]
+        ),
+        "HighLevelTargetOverrideFrames": int(
+            control.get("llm_target_override", pd.Series(False, index=control.index)).fillna(False).sum()
         ),
         "MeanHighLevelHoldFrames": (
             round(float(hold_frames.mean()), 2) if not hold_frames.empty else ""
@@ -410,6 +446,7 @@ def write_summary(rows, output_path):
         "Purpose",
         "A",
         "B",
+        "C",
         "Repair",
         "Controller",
         "Success",
@@ -430,8 +467,10 @@ def write_summary(rows, output_path):
         "HighLevelResponses",
         "HighLevelAccepted",
         "HighLevelRejected",
+        "HighLevelDelegated",
         "HighLevelActiveFrames",
         "HighLevelOverrideFrames",
+        "HighLevelTargetOverrideFrames",
         "MeanHighLevelHoldFrames",
         "MeanHighLevelLatencyFrames",
         "MeanHighLevelLatencySeconds",
@@ -445,6 +484,8 @@ def write_summary(rows, output_path):
         "Control",
         "Video",
         "Trajectory",
+        "RunMetadata",
+        "RequestsAudit",
     ]
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -452,19 +493,7 @@ def write_summary(rows, output_path):
         writer.writerows(rows)
 
 
-def write_experiment_metadata(output_path, args, seeds, selected_cases):
-    source_names = (
-        "config.py",
-        "detector.py",
-        "environment.py",
-        "dynamics.py",
-        "control_types.py",
-        "low_level_controller.py",
-        "mode_forecast.py",
-        "high_level_controller.py",
-        "responses_api_backend.py",
-        "run_experiments.py",
-    )
+def write_experiment_metadata(output_path, args, seeds, selected_cases, backend_metadata=None, source_dir=None):
     metadata = {
         "created_at": datetime.now().isoformat(),
         "controller": args.controller,
@@ -477,23 +506,27 @@ def write_experiment_metadata(output_path, args, seeds, selected_cases):
         },
         "max_steps": args.max_steps,
         "llm_cache_enabled": not args.no_llm_cache,
-        "config": {
-            key: value
-            for key, value in vars(config).items()
-            if key.isupper() and isinstance(value, (str, int, float, bool))
-        },
-        "source_sha256": {
-            name: hashlib.sha256((config.PROJECT_ROOT / name).read_bytes()).hexdigest()
-            for name in source_names
-        },
+        "config": config_snapshot(config),
+        "source_sha256": source_hashes(config.PROJECT_ROOT),
+        "backend": backend_metadata,
+        "input_semantics_version": INPUT_SEMANTICS_VERSION,
+        "pacing": {"fixed_wall_time_step": False,
+                   "pending_api_poll_seconds": config.LLM_PENDING_POLL_SECONDS},
     }
+    if source_dir is not None:
+        source_dir.mkdir(parents=True, exist_ok=False)
+        for name in SOURCE_NAMES:
+            (source_dir / name).write_bytes((config.PROJECT_ROOT / name).read_bytes())
+        metadata["source_snapshot"] = str(source_dir)
     metadata_path = output_path.with_suffix(output_path.suffix + ".metadata.json")
-    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    write_json_exclusive(metadata_path, metadata)
     return metadata_path
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Run batch shepherding experiments.")
+    parser.add_argument('--explicit-execution', action='store_true',
+                        help='Experimental FOLLOW_RULE versus deliberate COMMIT, full JSON only.')
     seed_group = parser.add_mutually_exclusive_group()
     seed_group.add_argument("--seed", type=int, help="Run one fixed seed.")
     seed_group.add_argument(
@@ -519,6 +552,7 @@ def parse_args(argv=None):
     scenario_group.add_argument("--scenario", choices=(*config.SCENARIOS, "custom"))
     parser.add_argument("--abnormal-a", type=int)
     parser.add_argument("--abnormal-b", type=int)
+    parser.add_argument("--abnormal-c", type=int)
     parser.add_argument(
         "--repair", action=argparse.BooleanOptionalAction, default=None,
         help="Repair on/off for --scenario; existing --cases retain their definitions.",
@@ -530,7 +564,16 @@ def parse_args(argv=None):
     parser.add_argument("--visuals", action="store_true", help="Save trajectory PNG files.")
     parser.add_argument("--video", action="store_true", help="Save MP4 animations. This is time-consuming and requires ffmpeg.")
     parser.add_argument("--analysis", action="store_true", help="Generate per-run analysis charts.")
-    parser.add_argument("--controller", choices=("rule", "mock-llm", "openai", "deepseek"), default="rule", help="Controller architecture for every case.")
+    parser.add_argument("--controller", choices=("rule", "mock-llm", "openai", "deepseek", "vllm"), default="rule", help="Controller architecture for every case.")
+    permission_group = parser.add_mutually_exclusive_group()
+    permission_group.add_argument(
+        "--llm-mode-only", action="store_true",
+        help="Ablation: LLM selects a mode but must delegate repair targets to rules.",
+    )
+    permission_group.add_argument(
+        "--llm-target-only", action="store_true",
+        help="Ablation: rules select the mode; LLM may select a repair target only.",
+    )
     parser.add_argument(
         "--concurrent-min-frames", type=int,
         help="Require this many consecutive dual-alarm frames before an API request.",
@@ -552,7 +595,27 @@ def parse_args(argv=None):
         default=None,
         help="Summary CSV path; default is a new timestamped logs/experiments folder.",
     )
+    parser.add_argument(
+        "--vllm-compact-output", action=argparse.BooleanOptionalAction, default=None,
+        help="Use compact m/t/h JSON for vllm; --no-vllm-compact-output restores verbose JSON.",
+    )
+    parser.add_argument(
+        "--vllm-prefix-priming", action=argparse.BooleanOptionalAction, default=None,
+        help="Warm fixed instructions once for vllm; requires VLLM_PREFIX_TOKEN_FILE.",
+    )
+    parser.add_argument(
+        "--vllm-input-format", choices=("json", "tables", "dedup"), default=None,
+        help="Use original JSON, experimental tables or deduplicated named JSON for vllm.",
+    )
     args = parser.parse_args(argv)
+    if args.vllm_input_format is not None and args.controller != "vllm":
+        parser.error("--vllm-input-format requires --controller vllm")
+    if args.vllm_prefix_priming is not None and args.controller != "vllm":
+        parser.error("--vllm-prefix-priming requires --controller vllm")
+    if args.vllm_compact_output is not None and args.controller != "vllm":
+        parser.error("--vllm-compact-output requires --controller vllm")
+    if (args.llm_mode_only or args.llm_target_only) and args.controller not in ("openai", "deepseek", "vllm"):
+        parser.error("LLM permission ablations require an API controller.")
     if args.max_steps < 1 or args.max_log_files < 1:
         parser.error("--max-steps and --max-log-files must be positive.")
     if args.concurrent_min_frames is not None and args.concurrent_min_frames < 1:
@@ -564,14 +627,16 @@ def parse_args(argv=None):
             parser.error("Seeds must be between 0 and 4294967295.")
     if args.runs and args.seed_mode == "sequence" and args.batch_seed + args.runs > 2**32:
         parser.error("The seed sequence exceeds 4294967295.")
-    if args.scenario is None and any(value is not None for value in (args.abnormal_a, args.abnormal_b, args.repair)):
+    if args.scenario is None and any(value is not None for value in (args.abnormal_a, args.abnormal_b, args.abnormal_c, args.repair)):
         parser.error("Population and repair overrides require --scenario.")
     if args.scenario:
-        counts = config.SCENARIOS.get(args.scenario, (config.NUM_ABNORMAL_A, config.NUM_ABNORMAL_B))
+        counts = config.SCENARIOS.get(args.scenario, (config.NUM_ABNORMAL_A, config.NUM_ABNORMAL_B, config.NUM_ABNORMAL_C))
         args.abnormal_a = counts[0] if args.abnormal_a is None else args.abnormal_a
         args.abnormal_b = counts[1] if args.abnormal_b is None else args.abnormal_b
-        if min(args.abnormal_a, args.abnormal_b) < 0 or args.abnormal_a + args.abnormal_b > config.NUM_SHEEP:
-            parser.error("A/B counts must be nonnegative and their sum cannot exceed NUM_SHEEP.")
+        args.abnormal_c = counts[2] if args.abnormal_c is None else args.abnormal_c
+        population = (args.abnormal_a, args.abnormal_b, args.abnormal_c)
+        if min(population) < 0 or sum(population) > config.NUM_SHEEP:
+            parser.error("A/B/C counts must be nonnegative and their sum cannot exceed NUM_SHEEP.")
         args.repair = config.REPAIR_ENABLED if args.repair is None else args.repair
     args.visuals = args.visuals or args.export in ("plots", "video")
     args.analysis = args.analysis or args.export in ("plots", "video")
@@ -594,6 +659,7 @@ def select_cases(args):
             "purpose": f"{args.scenario} population, repair {'on' if args.repair else 'off'}",
             "num_abnormal_a": args.abnormal_a,
             "num_abnormal_b": args.abnormal_b,
+            "num_abnormal_c": args.abnormal_c,
             "repair_enabled": args.repair,
         }]
     return (
@@ -605,7 +671,19 @@ def select_cases(args):
 
 def main(argv=None):
     args = parse_args(argv)
-    overrides = {}
+    overrides = {'HIGH_LEVEL_EXPLICIT_EXECUTION': args.explicit_execution}
+    if args.vllm_input_format is not None:
+        overrides["VLLM_INPUT_FORMAT"] = args.vllm_input_format
+    if args.vllm_compact_output is not None:
+        overrides["VLLM_COMPACT_OUTPUT"] = args.vllm_compact_output
+    if args.vllm_prefix_priming is not None:
+        overrides["VLLM_PREFIX_PRIMING"] = args.vllm_prefix_priming
+    if args.llm_mode_only:
+        overrides["HIGH_LEVEL_TARGET_SELECTION_ENABLED"] = False
+        overrides["HIGH_LEVEL_MODE_SELECTION_ENABLED"] = True
+    if args.llm_target_only:
+        overrides["HIGH_LEVEL_MODE_SELECTION_ENABLED"] = False
+        overrides["HIGH_LEVEL_TARGET_SELECTION_ENABLED"] = True
     if args.concurrent_min_frames is not None:
         overrides["HIGH_LEVEL_CONCURRENT_MIN_FRAMES"] = args.concurrent_min_frames
     if args.one_request_per_concurrent_episode is not None:
@@ -617,23 +695,44 @@ def main(argv=None):
 
 
 def run_batch(args):
+    output_path = (
+        Path(args.output).resolve() if args.output else config.PROJECT_ROOT / "logs" / "experiments"
+        / datetime.now().strftime("%Y%m%d_%H%M%S_%f") / "summary.csv"
+    )
+    if output_path.exists() or output_path.with_suffix(output_path.suffix + ".metadata.json").exists():
+        raise SystemExit(f"Experiment already exists; choose a new --output: {output_path}")
+    artifact_dir = output_path.parent / (output_path.stem + "_artifacts")
+    artifact_dir.mkdir(parents=True, exist_ok=False)
+    with temporary_config(
+        DATA_LOG_DIR=str(artifact_dir / "data"),
+        CONTROL_LOG_DIR=str(artifact_dir / "control"),
+        VISUAL_LOG_DIR=str(artifact_dir / "visuals"),
+        VIDEO_LOG_DIR=str(artifact_dir / "videos"),
+        ANALYSIS_LOG_DIR=str(artifact_dir / "analysis"),
+        LOG_RETENTION_ENABLED=False,
+        LLM_CACHE_ENABLED=not args.no_llm_cache,
+        CONTROLLER_KIND=args.controller,
+    ):
+        return _run_batch(args, output_path, artifact_dir)
+
+
+def _run_batch(args, output_path, artifact_dir):
     rows = []
     seeds = select_seeds(args)
     selected_cases = select_cases(args)
 
-    if args.controller in ("openai", "deepseek"):
+    backend_metadata = {"source": args.controller}
+    if args.controller in ("openai", "deepseek", "vllm"):
         try:
             probe = build_controller(args.controller)
         except RuntimeError as exc:
             raise SystemExit(f"Controller setup failed: {exc}") from None
+        backend_metadata = backend_snapshot(probe)
         probe.close()
 
-    output_path = (
-        Path(args.output) if args.output else config.PROJECT_ROOT / "logs" / "experiments"
-        / datetime.now().strftime("%Y%m%d_%H%M%S_%f") / "summary.csv"
-    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata_path = write_experiment_metadata(output_path, args, seeds, selected_cases)
+    metadata_path = write_experiment_metadata(output_path, args, seeds, selected_cases,
+                                               backend_metadata, artifact_dir / "source")
     # Preserve every run in this batch even when it exceeds the usual retention limit.
     max_log_files = max(args.max_log_files, len(seeds) * len(selected_cases))
     print(
@@ -646,7 +745,7 @@ def run_batch(args):
         for case in selected_cases:
             print(
                 f"seed={seed} {case['case']}: {case['purpose']} "
-                f"(A={case['num_abnormal_a']}, B={case['num_abnormal_b']}, "
+                f"(A={case['num_abnormal_a']}, B={case['num_abnormal_b']}, C={case.get('num_abnormal_c', 0)}, "
                 f"repair={case['repair_enabled']})"
             )
             row = run_case(

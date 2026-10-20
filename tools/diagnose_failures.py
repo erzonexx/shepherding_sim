@@ -245,7 +245,7 @@ def diagnose(
             inside_before = np.linalg.norm(env.sheep_pos - env.goal_pos, axis=1) < config.GOAL_RADIUS
             success = bool(env.step(alarms))
             if (
-                controller_kind in ("openai", "deepseek")
+                controller_kind in ("openai", "deepseek", "vllm")
                 and getattr(env.controller, "pending_request", None) is not None
             ):
                 time.sleep(config.LLM_PENDING_POLL_SECONDS)
@@ -332,11 +332,11 @@ def main():
     parser.add_argument("--compare-repair-targeting", action="store_true", help="Compare legacy and predictive repair-target selection")
     parser.add_argument("--summary-only", action="store_true", help="Skip per-frame CSVs for batch comparisons")
     parser.add_argument("--quiet", action="store_true", help="Suppress per-run console output")
-    parser.add_argument("--controller", choices=("rule", "mock-llm", "openai", "deepseek"), default="rule")
+    parser.add_argument("--controller", choices=("rule", "mock-llm", "openai", "deepseek", "vllm"), default="rule")
     args = parser.parse_args()
     if args.max_steps < 1:
         parser.error("--max-steps must be positive")
-    if args.controller in ("openai", "deepseek"):
+    if args.controller in ("openai", "deepseek", "vllm"):
         try:
             probe = build_controller(args.controller)
         except RuntimeError as exc:

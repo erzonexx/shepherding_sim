@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime
 import itertools
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,36 @@ METRICS = [
     "FinalInsideGoal",
     "GoalExits",
 ]
+
+
+def paired_bootstrap_interval(values, resamples=20000, seed=20261008):
+    """Resample whole seed-pair differences, not individual frames."""
+    values = np.asarray(values, dtype=float)
+    if values.ndim != 1 or not len(values) or not np.isfinite(values).all() or resamples < 1:
+        raise ValueError("Use finite nonempty differences and positive resample count")
+    indices = np.random.default_rng(seed).integers(0, len(values), size=(resamples, len(values)))
+    return np.quantile(values[indices].mean(axis=1), [.025, .975]).tolist()
+
+
+def wilson_interval(successes, runs):
+    if runs < 1 or not 0 <= successes <= runs:
+        raise ValueError("Use valid success/run counts")
+    z = 1.959963984540054
+    fraction = successes / runs
+    denominator = 1 + z * z / runs
+    center = (fraction + z * z / (2 * runs)) / denominator
+    margin = z * math.sqrt(fraction * (1 - fraction) / runs + z * z / (4 * runs * runs)) / denominator
+    return [0. if successes == 0 else max(0., center - margin),
+            1. if successes == runs else min(1., center + margin)]
+
+
+def exact_mcnemar_pvalue(rescued, regressed):
+    if min(rescued, regressed) < 0:
+        raise ValueError("Discordant counts must be nonnegative")
+    count = rescued + regressed
+    if not count:
+        return 1.0
+    return min(1.0, 2 * sum(math.comb(count, k) for k in range(min(rescued, regressed) + 1)) / 2**count)
 
 
 def _as_bool(series):
@@ -81,6 +112,10 @@ def compare_frames(baseline, candidate):
         "failure_to_success": int(improved.sum()),
         "success_to_failure": int(regressed.sum()),
         "metrics": {},
+        "success_mcnemar_exact_p": exact_mcnemar_pvalue(int(improved.sum()), int(regressed.sum())),
+        "baseline_success_95_interval": wilson_interval(int(paired["Success_baseline"].sum()), len(paired)),
+        "candidate_success_95_interval": wilson_interval(int(paired["Success_candidate"].sum()), len(paired)),
+        "sampling_note": "Seed-paired percentile bootstrap, 20000 draws with seed20261008; descriptive, no multiplicity adjustment or repeated API-draw validation.",
     }
     for metric in METRICS:
         differences = paired[f"Delta_{metric}"].to_numpy(dtype=float)
@@ -90,6 +125,7 @@ def compare_frames(baseline, candidate):
             "mean_delta": float(np.mean(differences)),
             "median_delta": float(np.median(differences)),
             "exploratory_signed_mean_p": exact_signed_mean_pvalue(differences),
+            "paired_mean_delta_95_interval": paired_bootstrap_interval(differences),
         }
     return paired, summary
 

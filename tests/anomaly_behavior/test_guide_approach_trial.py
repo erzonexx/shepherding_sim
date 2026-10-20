@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from control_types import ControlObservation
-from tests.anomaly_behavior.run_guide_approach_trial import (
+from experiments.anomaly_behavior.run_guide_approach_trial import (
     LateralGuideController,
 )
 

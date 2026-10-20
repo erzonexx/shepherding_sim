@@ -3,7 +3,8 @@ import unittest
 import pandas as pd
 
 from run_experiments import count_high_level_override_frames
-from tools.analyze_experiment_pair import compare_frames, exact_signed_mean_pvalue
+from tools.analyze_experiment_pair import (compare_frames, exact_signed_mean_pvalue,
+                                         paired_bootstrap_interval, wilson_interval, exact_mcnemar_pvalue)
 
 
 class ExperimentAnalysisTests(unittest.TestCase):
@@ -41,6 +42,24 @@ class ExperimentAnalysisTests(unittest.TestCase):
 
     def test_zero_differences_have_unit_pvalue(self):
         self.assertEqual(exact_signed_mean_pvalue([0, 0, 0]), 1.0)
+
+    def test_pair_interval_is_deterministic_and_does_not_break_constant_differences(self):
+        self.assertEqual(paired_bootstrap_interval([4., 4., 4.]), [4., 4.])
+        self.assertEqual(paired_bootstrap_interval([-2., 0., 5.], resamples=1000),
+                         paired_bootstrap_interval([-2., 0., 5.], resamples=1000))
+        for values in ([], [float("nan")]):
+            with self.assertRaises(ValueError):
+                paired_bootstrap_interval(values)
+
+    def test_success_uncertainty_handles_zero_success_and_paired_flips(self):
+        low, high = wilson_interval(0, 100)
+        self.assertEqual(low, 0.)
+        self.assertEqual(wilson_interval(100, 100)[1], 1.)
+        self.assertGreater(high, 0.)
+        self.assertLess(high, .04)
+        self.assertEqual(exact_mcnemar_pvalue(0, 0), 1.)
+        self.assertEqual(exact_mcnemar_pvalue(3, 0), .25)
+        self.assertEqual(exact_mcnemar_pvalue(3, 0), exact_mcnemar_pvalue(0, 3))
 
     def test_override_frames_exclude_llm_choices_matching_rule_fallback(self):
         control = pd.DataFrame([

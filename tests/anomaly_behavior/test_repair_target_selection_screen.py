@@ -1,7 +1,7 @@
 import unittest
 
 import config
-from tests.anomaly_behavior.run_repair_target_selection_screen import (
+from experiments.anomaly_behavior.run_repair_target_selection_screen import (
     run_screen,
     same_mode_switches,
     summarize,

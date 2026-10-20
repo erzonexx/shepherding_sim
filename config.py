@@ -1,14 +1,14 @@
-import numpy as np
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 SCENARIOS = {
-    "normal": (0, 0),
-    "type-a": (4, 0),
-    "type-b": (0, 4),
-    "mixed": (2, 2),
-    "stress": (3, 3),
+    "normal": (0, 0, 0),
+    "type-a": (4, 0, 0),
+    "type-b": (0, 4, 0),
+    "type-c": (0, 0, 4),
+    "mixed": (2, 2, 0),
+    "stress": (3, 3, 0),
 }
 
 # 0. simulation settings
@@ -16,6 +16,7 @@ MAX_STEPS = 2000
 USE_FIXED_SEED = True 
 RANDOM_SEED = 70
 MAX_LOG_FILES = 30           # Maximum number of log files to keep
+LOG_RETENTION_ENABLED = True  # Interactive logs only; formal batches disable pruning.
 SAVE_TRAJECTORY_PNG = True
 SAVE_ANIMATION_MP4 = True    # Enable MP4 video generation
 DATA_LOG_DIR = str(PROJECT_ROOT / "logs" / "data")
@@ -39,10 +40,14 @@ HIGH_LEVEL_MIN_DWELL_FRAMES = 15
 HIGH_LEVEL_MAX_RESPONSE_AGE_FRAMES = 600
 HIGH_LEVEL_RETRY_FRAMES = 30
 HIGH_LEVEL_CONTEXT_FRAMES = 30
+HIGH_LEVEL_EXPLICIT_EXECUTION = False  # Opt-in FOLLOW_RULE versus deliberate COMMIT.
+HIGH_LEVEL_TARGET_HANDOFF_ENABLED = False  # Opt-in target-only admission and clean handoff.
 HIGH_LEVEL_FORECAST_FRAMES = 30
 # Experimental API request throttles; these defaults preserve the original policy.
 HIGH_LEVEL_CONCURRENT_MIN_FRAMES = 1
 HIGH_LEVEL_ONE_REQUEST_PER_EPISODE = False
+HIGH_LEVEL_TARGET_SELECTION_ENABLED = True
+HIGH_LEVEL_MODE_SELECTION_ENABLED = True
 
 # Repair-target selection. Both repair modes keep a target briefly and switch
 # only when another sheep is meaningfully more urgent.
@@ -53,7 +58,7 @@ REPAIR_TARGET_SWITCH_MARGIN = 3.0
 REPAIR_TARGET_LOOKAHEAD_FRAMES = 20
 REPAIR_TARGET_OUTSIDE_GOAL_FIRST = True
 
-# Shared settings for Responses API providers.
+# Shared settings for asynchronous API providers.
 LLM_API_TIMEOUT_SECONDS = 20.0
 LLM_MAX_OUTPUT_TOKENS = 200
 LLM_PENDING_POLL_SECONDS = 0.05
@@ -67,6 +72,14 @@ DEEPSEEK_MODEL = "deepseek-v4-flash"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_CACHE_PATH = str(PROJECT_ROOT / "logs" / "llm_cache" / "deepseek_responses.jsonl")
 DEEPSEEK_REASONING_EFFORT = "none"  # This short mode-selection task needs no CoT
+VLLM_MODEL = "nvidia/Qwen3.8-27B-NVFP4"
+VLLM_BASE_URL = "http://127.0.0.1:8000/v1"
+VLLM_CACHE_PATH = str(PROJECT_ROOT / "logs" / "llm_cache" / "vllm_chat.jsonl")
+VLLM_MAX_OUTPUT_TOKENS = 512  # Independent budget; leaves DeepSeek unchanged.
+VLLM_COMPACT_OUTPUT = False  # Opt-in pilot: faster m/t/h output, quality still under evaluation.
+VLLM_INPUT_FORMAT = "json"  # --vllm-input-format tables enables lossless input compression.
+VLLM_PREFIX_PRIMING = False  # Opt-in; requires a prepared token file and compatible server cache.
+VLLM_PREFIX_TOKEN_FILE = ""  # tools/prepare_vllm_prefix.py output; may use the same-name env var.
 
 # 1. space and goal settings
 SPACE_SIZE = 200.0
@@ -103,10 +116,13 @@ EPSILON = 1e-6                 # small number to avoid division by zero
 # 6. abnormal sheep settings
 NUM_ABNORMAL_A = 3             # number of abnormal sheep A (weak dog response)
 NUM_ABNORMAL_B = 3             # number of abnormal sheep B (Dispersing)
+NUM_ABNORMAL_C = 0             # number of near-dog sensitive sheep (experimental)
 WEIGHT_DOG_REPULSION_A_FACTOR = 0.15 # type A dog response relative to normal
 WEIGHT_COHESION_B_FACTOR = 0.15  # type B cohesion force factor (vs normal)
 WEIGHT_SEPARATION_B_FACTOR = 1.5 # type B separation force factor (vs normal)
 SEPARATION_RADIUS_B = 6.0      # type B's separation sensing radius (larger)
+TYPE_C_SENSITIVITY_RADIUS = 30.0  # extra dog response fades to normal at this distance
+WEIGHT_DOG_REPULSION_C_FACTOR = 3.0  # maximum near-dog response relative to normal
 
 # 7. danger detection settings
 DANGER_DISPERSION_THRESHOLD = 40.0 # dispersion radius > this value triggers an alarm

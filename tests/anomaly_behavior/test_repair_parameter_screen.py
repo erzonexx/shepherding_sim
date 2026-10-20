@@ -1,6 +1,6 @@
 import unittest
 
-from anomaly_behavior.run_repair_parameter_screen import summarize
+from experiments.anomaly_behavior.run_repair_parameter_screen import summarize
 
 
 class RepairParameterScreenTests(unittest.TestCase):

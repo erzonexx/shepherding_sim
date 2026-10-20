@@ -1,6 +1,6 @@
 import unittest
 
-from anomaly_behavior.run_splitting_candidate_screen import (
+from experiments.anomaly_behavior.run_splitting_candidate_screen import (
     candidate_masks,
     summarize_masks,
 )

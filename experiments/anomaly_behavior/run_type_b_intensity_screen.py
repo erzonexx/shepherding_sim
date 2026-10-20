@@ -19,7 +19,7 @@ import config
 from dynamics import advance_sheep
 from environment import SwarmEnv
 from run_experiments import CASES, temporary_config
-from tests.anomaly_behavior.run_type_b_threshold_trials import (
+from experiments.anomaly_behavior.run_type_b_threshold_trials import (
     POST_START_FRAME,
     compare_shared_frames,
     threshold_counts,

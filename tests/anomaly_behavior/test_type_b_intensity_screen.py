@@ -1,7 +1,7 @@
 import unittest
 
 import config
-from tests.anomaly_behavior.run_type_b_intensity_screen import (
+from experiments.anomaly_behavior.run_type_b_intensity_screen import (
     open_loop,
     run_screen,
 )

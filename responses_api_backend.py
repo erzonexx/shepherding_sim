@@ -1,4 +1,4 @@
-"""Asynchronous Responses API backends for high-level mode selection."""
+"""Asynchronous Responses API backends for mode and repair-target selection."""
 
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
@@ -10,28 +10,31 @@ import threading
 import time
 
 import config
+from experiment_audit import INPUT_SEMANTICS_VERSION, utc_now
 
 
-PROMPT_VERSION = "shepherd-mode-v9-aligned-candidates"
+PROMPT_VERSION = "shepherd-mode-v12-relative-outward"
 SYSTEM_INSTRUCTIONS = """You are the high-level mode selector for a 2D swarm
 shepherding controller. The low-level controller remains active while you reason.
 Calls normally contain concurrent splitting and stagnation alarms. Select exactly
-one existing mode from the supplied state, giving first priority to successful
+one existing mode and optionally one supplied repair target, giving first priority to successful
 arrival, then to limiting dispersion and unsafe boundary approaches.
+The response schema's mode enum lists only modes admissible for this request.
+Choose from that enum; forecasts for other modes are context, not permission to use them.
 
 The rule_mode field is the deterministic choice that will run if you do
 not provide a useful override. Prefer rule_mode unless another admissible mode
 has a clear advantage in the current geometry and short-horizon estimates
 without meaningfully worsening goal progress, dispersion, predicted goal
 exits, or boundary safety.
-Do not switch modes solely because a Type A or Type B sheep is present.
+Do not switch modes or targets solely because a Type A, Type B, or Type C sheep is present.
 When both alarms are active, the rule fallback prioritizes HARD_TO_GUIDE;
 choose COHESION_PRIORITY only when the state and forecast together justify it.
 
-COHESION_PRIORITY targets a predicted outward flock outlier. Prefer it
+COHESION_PRIORITY collects a selected sheep, by default a predicted outward flock outlier. Prefer it
 when spread is high or worsening, the cohesion candidate is moving outward, or a
-Type B sheep is the main dispersion target. HARD_TO_GUIDE targets the sheep
-predicted to remain most distant from the goal. Prefer it when progress is poor,
+Type B sheep is the main dispersion target. HARD_TO_GUIDE drives a selected sheep
+toward the goal, by default the predicted goal-distance laggard. Prefer it when progress is poor,
 the hard-to-guide candidate has weak goalward motion, or a Type A sheep is the
 main lagging target.
 TARGET_TRACKING is appropriate only when ordinary drive/collect behavior is
@@ -47,7 +50,18 @@ means the dog is already on the desired side; negative boundary margin means the
 candidate drive point lies outside the workspace. Type A means reduced dog
 repulsion with normal flocking and boundary response. Type B means weak cohesion
 and stronger separation. Positive
-goalward speed is toward the goal; positive outward speed is away from the flock.
+goalward speed is toward the goal; outward speed is the sheep's velocity relative
+to the moving flock centroid, projected away from that centroid. Positive means
+separating from the flock, not merely translating with it.
+
+The repair_candidates field offers at most three targets per repair mode,
+including that mode's rule-selected target when eligible. Choose target_sheep_id
+only from the chosen mode's target_id values, or null to delegate target selection
+to the low-level rule. TARGET_TRACKING always requires null. Compare candidates'
+geometry and individual forecast fields, not just their sheep types. Type C has
+normal flocking and stronger near-dog repulsion as described in type_c_response
+when present. The fast layer computes all movement; you cannot change distances,
+speeds, or force coefficients.
 
 The mode_forecasts field contains independent 30-frame shadow simulations using
 the same kinematic model for all three existing modes. They are estimates, not
@@ -56,7 +70,8 @@ centroid_progress and inside_goal_change, and less final_max_spread,
 predicted_goal_exits, predicted_splitting_frames, and peak_out_of_bounds. Treat
 predicted goal exits and out-of-bounds motion as strong costs. Use static geometry
 to interpret genuine forecast trade-offs. The execution interface currently
-rejects a choice that is Pareto-dominated by another admissible mode; that
+rechecks the selected mode AND target at response arrival and rejects a choice
+that is Pareto-dominated by another admissible mode or the same mode's rule target; that
 filter is not itself a proof of safety.
 
 Use the supplied values exactly and do not invent missing state. Choose a 15-60
@@ -88,6 +103,44 @@ class ResponsesAPIBackend:
         cache_path=None,
     ):
         self.settings = settings
+        self.target_selection_enabled = getattr(
+            settings, "HIGH_LEVEL_TARGET_SELECTION_ENABLED", True
+        )
+        self.mode_selection_enabled = getattr(
+            settings, "HIGH_LEVEL_MODE_SELECTION_ENABLED", True
+        )
+        self.prompt_version = PROMPT_VERSION + (
+            "-target-only-v1" if not self.mode_selection_enabled else
+            "" if self.target_selection_enabled else "-mode-only-v2"
+        )
+        self.instructions = SYSTEM_INSTRUCTIONS + (
+            "" if self.target_selection_enabled else
+            "\n\nMODE-ONLY ABLATION: You may select only the mode and hold_frames. "
+            "Always return target_sheep_id as JSON null, never a sheep ID. "
+            "Repair candidates are context for mode selection only; "
+            "the low-level rule selects every target."
+        )
+        if not self.mode_selection_enabled:
+            self.instructions += (
+                "\n\nTARGET-ONLY ABLATION: The rule selects the mode. "
+                "Always copy rule_mode exactly into mode; you cannot switch modes. "
+                "Choose target_sheep_id only from that rule mode's repair_candidates, "
+                "or null to delegate to the rule. hold_frames holds only the target, "
+                "never the mode; any rule mode change immediately releases it."
+            )
+        self.explicit_execution = bool(getattr(settings, 'HIGH_LEVEL_EXPLICIT_EXECUTION', False))
+        from target_handoff import validate_settings, enabled, VERSION as HANDOFF_VERSION, INSTRUCTIONS as HANDOFF_INSTRUCTIONS
+        validate_settings(settings)
+        self.target_handoff_enabled = enabled(settings)
+        if self.target_handoff_enabled:
+            self.prompt_version += '-' + HANDOFF_VERSION
+            self.instructions += HANDOFF_INSTRUCTIONS
+        if self.explicit_execution:
+            if not (self.mode_selection_enabled and self.target_selection_enabled):
+                raise RuntimeError('Explicit execution currently requires both mode and target permissions.')
+            from execution_contract import VERSION, INSTRUCTIONS
+            self.prompt_version += '-' + VERSION
+            self.instructions += INSTRUCTIONS
         configured_model = getattr(settings, self.default_model_setting)
         configured_base_url = (
             getattr(settings, self.default_base_url_setting)
@@ -114,34 +167,82 @@ class ResponsesAPIBackend:
         self._lock = threading.Lock()
         self._pending = {}
         self._cache = self._load_cache()
+        self._audit_path = None
+        self._audit_lock = threading.Lock()
+
+    def set_audit_path(self, path):
+        """Opt-in append-only journal; running canceled calls still record completion."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("x", encoding="utf-8"):
+            pass
+        self._audit_path = path
+
+    def record_event(self, event, request_id, **fields):
+        if self._audit_path is None:
+            return
+        record = {"event": event, "request_id": request_id,
+                  "recorded_at_utc": utc_now(), **fields}
+        with self._audit_lock, self._audit_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
 
     def submit(self, request):
-        cache_key = self._cache_key(request.state_summary)
+        cache_key = self._cache_key(request.state_summary, alarms=request.alarms)
         cached = self._cache.get(cache_key)
-        if cached is not None:
-            future = self.executor.submit(
-                self._cached_result, request, cached
-            )
-        else:
-            future = self.executor.submit(self._call_api, request, cache_key)
+        submitted, submitted_utc = time.perf_counter(), utc_now()
+        self.record_event('submitted', request.request_id, trigger_frame=request.trigger_frame,
+                          submitted_at_utc=submitted_utc, model=self.model,
+                          prompt_version=self.prompt_version,
+                          input_semantics_version=INPUT_SEMANTICS_VERSION,
+                          state_summary=request.state_summary)
+        future = self.executor.submit(
+            self._execute_timed, request, cache_key, cached, submitted, submitted_utc
+        )
+        future._shepherd_submitted_clock = submitted
         with self._lock:
             self._pending[request.request_id] = future
 
     def poll(self, request_id, frame):
-        del frame
         with self._lock:
             future = self._pending.get(request_id)
         if future is None or not future.done():
             return None
         with self._lock:
             self._pending.pop(request_id, None)
-        return future.result()
+        result = dict(future.result())
+        result.update(consumed_at_utc=utc_now(), consumed_frame=frame,
+                      submit_to_consume_seconds=time.perf_counter() - future._shepherd_submitted_clock)
+        self.record_event('consumed', request_id, consumed_frame=frame,
+                          consumed_at_utc=result['consumed_at_utc'],
+                          submit_to_consume_seconds=result['submit_to_consume_seconds'])
+        return result
+
+    def _execute_timed(self, request, cache_key, cached, submitted, submitted_utc):
+        started, started_utc = time.perf_counter(), utc_now()
+        self.record_event('worker_started', request.request_id, worker_started_at_utc=started_utc)
+        result = (self._cached_result(request, cached) if cached is not None
+                  else self._call_api(request, cache_key))
+        ready = time.perf_counter()
+        result.update(
+            submitted_at_utc=submitted_utc, worker_started_at_utc=started_utc,
+            response_ready_at_utc=utc_now(), queue_seconds=started - submitted,
+            worker_seconds=ready - started, submit_to_ready_seconds=ready - submitted,
+            observation_at_utc=request.observed_at_utc,
+        )
+        self.record_event('response_ready', request.request_id, **{
+            key: value for key, value in result.items()
+            if key not in ('request_id', 'backend_error')
+        }, has_backend_error=bool(result.get('backend_error')))
+        return result
 
     def cancel(self, request_id):
         with self._lock:
             future = self._pending.pop(request_id, None)
         if future is not None:
-            future.cancel()
+            canceled_before_start = future.cancel()
+            self.record_event('canceled', request_id,
+                              canceled_before_start=canceled_before_start,
+                              future_done=future.done())
 
     def close(self):
         if self._owns_executor:
@@ -171,23 +272,33 @@ class ResponsesAPIBackend:
     def _call_api(self, request, cache_key):
         started = time.perf_counter()
         response = None
+        api_timing = {}
         try:
+            response_format = self._response_format(
+                request.state_summary.get("rule_mode"), alarms=request.alarms
+            )
             request_options = {
                 "model": self.model,
-                "instructions": SYSTEM_INSTRUCTIONS,
+                "instructions": self.instructions,
                 "input": json.dumps(
                     request.state_summary,
                     ensure_ascii=True,
                     sort_keys=True,
                     separators=(",", ":"),
                 ),
-                "text": {"format": self._response_format()},
+                "text": {"format": response_format},
                 "max_output_tokens": self.settings.LLM_MAX_OUTPUT_TOKENS,
                 "store": False,
             }
             if self.reasoning_effort:
                 request_options["reasoning"] = {"effort": self.reasoning_effort}
-            response = self.client.responses.create(**request_options)
+            api_started = time.perf_counter()
+            api_timing["api_started_at_utc"] = utc_now()
+            try:
+                response = self._create_response(request_options)
+            finally:
+                api_timing.update(api_returned_at_utc=utc_now(),
+                                  api_seconds=time.perf_counter() - api_started)
             output_text = self._extract_output_text(response)
             if not output_text.strip():
                 status = self._field(response, "status")
@@ -197,12 +308,23 @@ class ResponsesAPIBackend:
                     detail += f", incomplete_reason={incomplete_reason}"
                 raise ValueError(f"empty response output ({detail})")
             decision = json.loads(output_text)
+            if not isinstance(decision, Mapping) or decision.get("mode") not in response_format["schema"]["properties"]["mode"]["enum"]:
+                raise ValueError("Response mode is not admissible for the request alarms.")
             latency = time.perf_counter() - started
             cache_value = {
                 "mode": decision.get("mode"),
+                "target_sheep_id": decision.get("target_sheep_id"),
                 "hold_frames": decision.get("hold_frames"),
                 "reason": decision.get("reason"),
             }
+            if self.explicit_execution:
+                policy = decision.get('execution_policy')
+                from execution_contract import POLICIES
+                if policy not in POLICIES:
+                    raise ValueError('Invalid execution policy')
+                if policy == 'FOLLOW_RULE' and (decision.get('mode') != request.state_summary.get('rule_mode') or decision.get('target_sheep_id') is not None):
+                    raise ValueError('Invalid rule delegation')
+                cache_value['execution_policy'] = policy
             self._save_cache(cache_key, cache_value)
             return {
                 "request_id": request.request_id,
@@ -211,20 +333,28 @@ class ResponsesAPIBackend:
                 "latency_seconds": latency,
                 "cache_hit": False,
                 "model": self.model,
-                "prompt_version": PROMPT_VERSION,
+                "prompt_version": self.prompt_version,
+                **api_timing,
                 **self._response_provenance(response),
             }
         except Exception as exc:
             return {
                 "request_id": request.request_id,
                 "trigger_frame": request.trigger_frame,
-                "backend_error": f"{type(exc).__name__}: {exc}"[:500],
+                "backend_error": self._format_error(exc),
                 "latency_seconds": time.perf_counter() - started,
                 "cache_hit": False,
                 "model": self.model,
-                "prompt_version": PROMPT_VERSION,
+                "prompt_version": self.prompt_version,
+                **api_timing,
                 **self._response_provenance(response),
             }
+
+    def _create_response(self, request_options):
+        return self.client.responses.create(**request_options)
+
+    def _format_error(self, exc):
+        return f"{type(exc).__name__}: {exc}"[:500]
 
     def _extract_output_text(self, response):
         direct = self._field(response, "output_text", "") or ""
@@ -250,6 +380,7 @@ class ResponsesAPIBackend:
             "incomplete_reason": self._incomplete_reason(response),
             "input_tokens": self._field(usage, "input_tokens"),
             "output_tokens": self._field(usage, "output_tokens"),
+            "served_model": self._field(response, "model"),
         }
 
     def _incomplete_reason(self, response):
@@ -270,11 +401,22 @@ class ResponsesAPIBackend:
             "latency_seconds": 0.0,
             "cache_hit": True,
             "model": self.model,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": self.prompt_version,
         }
 
-    def _response_format(self):
-        return {
+    def _response_format(self, rule_mode=None, alarms=None):
+        allowed_modes = ["TARGET_TRACKING", "COHESION_PRIORITY", "HARD_TO_GUIDE"]
+        if alarms is not None:
+            allowed_modes = ["TARGET_TRACKING"]
+            if "flock_splitting" in alarms:
+                allowed_modes.append("COHESION_PRIORITY")
+            if "stagnation" in alarms:
+                allowed_modes.append("HARD_TO_GUIDE")
+        if not self.mode_selection_enabled:
+            if rule_mode not in allowed_modes:
+                raise ValueError("Target-only requests require an admissible rule_mode.")
+            allowed_modes = [rule_mode]
+        result = {
             "type": "json_schema",
             "name": "shepherd_mode_decision",
             "strict": True,
@@ -283,30 +425,36 @@ class ResponsesAPIBackend:
                 "properties": {
                     "mode": {
                         "type": "string",
-                        "enum": [
-                            "TARGET_TRACKING",
-                            "COHESION_PRIORITY",
-                            "HARD_TO_GUIDE",
-                        ],
+                        "enum": allowed_modes,
                     },
                     "hold_frames": {
                         "type": "integer",
                         "minimum": self.settings.HIGH_LEVEL_MIN_HOLD_FRAMES,
                         "maximum": self.settings.HIGH_LEVEL_MAX_HOLD_FRAMES,
                     },
+                    "target_sheep_id": (
+                        {"type": ["integer", "null"], "minimum": 0}
+                        if self.target_selection_enabled else {"type": "null"}
+                    ),
                     "reason": {"type": "string", "maxLength": 160},
                 },
-                "required": ["mode", "hold_frames", "reason"],
+                "required": ["mode", "target_sheep_id", "hold_frames", "reason"],
                 "additionalProperties": False,
             },
         }
+        if self.explicit_execution:
+            from execution_contract import POLICIES
+            result['schema']['properties']['execution_policy'] = {'type': 'string', 'enum': list(POLICIES)}
+            result['schema']['required'].append('execution_policy')
+        return result
 
-    def _cache_key(self, state_summary):
+    def _cache_key(self, state_summary, alarms=None):
         payload = {
             "source": self.source,
             "model": self.model,
             "reasoning_effort": self.reasoning_effort,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": self.prompt_version,
+            "request_alarms": sorted(state_summary.get("alarms", ()) if alarms is None else alarms),
             "hold_range": [
                 self.settings.HIGH_LEVEL_MIN_HOLD_FRAMES,
                 self.settings.HIGH_LEVEL_MAX_HOLD_FRAMES,

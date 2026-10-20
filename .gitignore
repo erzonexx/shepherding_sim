@@ -3,7 +3,6 @@ logs/
 
 # Local reports, posters, and generated presentation work
 local_artifacts/
-docs/
 project_docs/
 .codex_tmp/
 

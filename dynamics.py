@@ -65,6 +65,16 @@ def advance_sheep(
     distances_from_dog = np.linalg.norm(
         vectors_from_dog, axis=1, keepdims=True
     )
+    sensitive = statuses == "C"
+    if np.any(sensitive):
+        proximity = np.clip(
+            1.0 - distances_from_dog[sensitive] / settings.TYPE_C_SENSITIVITY_RADIUS,
+            0.0,
+            1.0,
+        )
+        dog_repulsion_weights[sensitive] *= (
+            1.0 + (settings.WEIGHT_DOG_REPULSION_C_FACTOR - 1.0) * proximity
+        )
     directions_from_dog = vectors_from_dog / (
         distances_from_dog + settings.EPSILON
     )

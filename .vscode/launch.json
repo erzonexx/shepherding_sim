@@ -39,6 +39,8 @@
         "${input:countA}",
         "--abnormal-b",
         "${input:countB}",
+        "--abnormal-c",
+        "${input:countC}",
         "--seed",
         "${input:seed}",
         "--max-steps",
@@ -92,6 +94,8 @@
         "${input:countA}",
         "--abnormal-b",
         "${input:countB}",
+        "--abnormal-c",
+        "${input:countC}",
         "${input:batchRepair}",
         "--runs",
         "${input:batchRuns}",
@@ -134,6 +138,10 @@
         {
           "label": "Dual-layer: fast controller + DeepSeek slow controller",
           "value": "deepseek"
+        },
+        {
+          "label": "Dual-layer: fast controller + Spark Qwen (local vLLM)",
+          "value": "vllm"
         }
       ],
       "default": "rule"
@@ -156,6 +164,10 @@
           "value": "type-b"
         },
         {
+          "label": "Type C: 0A + 0B + 4C (experimental)",
+          "value": "type-c"
+        },
+        {
           "label": "Mixed: 2A + 2B",
           "value": "mixed"
         },
@@ -169,7 +181,7 @@
     {
       "id": "countA",
       "type": "promptString",
-      "description": "Number of Type A sheep (A + B must not exceed 20 with default config)",
+      "description": "Number of Type A sheep (A + B + C must not exceed 20 with default config)",
       "default": "3"
     },
     {
@@ -177,6 +189,12 @@
       "type": "promptString",
       "description": "Number of Type B sheep",
       "default": "3"
+    },
+    {
+      "id": "countC",
+      "type": "promptString",
+      "description": "Number of experimental Type C sheep",
+      "default": "0"
     },
     {
       "id": "seed",

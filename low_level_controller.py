@@ -1,5 +1,6 @@
 """Low-level kinematic vector controller for shepherd motion."""
 
+import copy
 from typing import Optional
 
 import numpy as np
@@ -29,9 +30,11 @@ class LowLevelController:
         self.repair_target_mode = None
         self.repair_target_id = None
         self.repair_target_age = 0
+        self.repair_target_hold_released = False
 
     def decide(
-        self, observation: ControlObservation, mode_override: Optional[str] = None
+        self, observation: ControlObservation, mode_override: Optional[str] = None,
+        target_override: Optional[int] = None,
     ) -> ControlDecision:
         cfg = self.settings
         sheep_pos = observation.sheep_positions
@@ -44,6 +47,18 @@ class LowLevelController:
         distances_to_goal = np.linalg.norm(sheep_pos - goal_pos, axis=1)
 
         mode = mode_override if mode_override is not None else self._select_mode(alarms)
+        if target_override is not None:
+            if mode not in ("HARD_TO_GUIDE", "COHESION_PRIORITY"):
+                raise ValueError("Only repair modes accept a target override.")
+            if not self.repair_target_is_eligible(observation, target_override):
+                raise ValueError("Repair target must be a valid sheep outside the goal.")
+            if self.repair_target_mode == mode and self.repair_target_id == target_override:
+                self.repair_target_age += 1
+            else:
+                self.repair_target_age = 1
+            self.repair_target_mode = mode
+            self.repair_target_id = target_override
+            self.repair_target_hold_released = False
         vectors_to_center = sheep_pos - center
         distances_to_center = np.linalg.norm(vectors_to_center, axis=1)
         max_distance_to_center = np.max(distances_to_center)
@@ -63,7 +78,9 @@ class LowLevelController:
                 direction = to_goal / (centroid_distance + cfg.EPSILON)
                 drive_point = center - direction * cfg.DOG_DRIVE_DISTANCE
         elif mode == "HARD_TO_GUIDE":
-            if cfg.REPAIR_TARGET_SELECTION_ENABLED:
+            if target_override is not None:
+                target_id = target_override
+            elif cfg.REPAIR_TARGET_SELECTION_ENABLED:
                 target_id = self._select_repair_target(
                     mode,
                     self._hard_to_guide_scores(observation, distances_to_goal),
@@ -78,7 +95,9 @@ class LowLevelController:
             )
             drive_point = target_pos - direction * cfg.HARD_TO_GUIDE_DISTANCE
         elif mode == "COHESION_PRIORITY":
-            if cfg.REPAIR_TARGET_SELECTION_ENABLED:
+            if target_override is not None:
+                target_id = target_override
+            elif cfg.REPAIR_TARGET_SELECTION_ENABLED:
                 target_id = self._select_repair_target(
                     mode,
                     self._cohesion_scores(observation, vectors_to_center),
@@ -110,6 +129,34 @@ class LowLevelController:
             issued_for_frame=observation.frame,
             source="rule",
         )
+
+    def repair_target_is_eligible(self, observation, target_id):
+        return (
+            isinstance(target_id, int)
+            and not isinstance(target_id, bool)
+            and 0 <= target_id < len(observation.sheep_positions)
+            and np.linalg.norm(
+                observation.sheep_positions[target_id] - observation.goal_position
+            ) >= self.settings.GOAL_RADIUS
+        )
+
+    def repair_candidates(self, observation, mode, limit=3):
+        positions = observation.sheep_positions
+        distances = np.linalg.norm(positions - observation.goal_position, axis=1)
+        if mode == "HARD_TO_GUIDE":
+            scores = self._hard_to_guide_scores(observation, distances)
+        elif mode == "COHESION_PRIORITY":
+            scores = self._cohesion_scores(observation, positions - np.mean(positions, axis=0))
+        else:
+            return []
+        eligible = np.flatnonzero(distances >= self.settings.GOAL_RADIUS)
+        ranked = sorted(eligible.tolist(), key=lambda target: (-scores[target], target))
+        # Include the rule's held target, not just the highest instantaneous scores.
+        default = copy.copy(self).decide(observation, mode_override=mode).target_sheep_id
+        if default in ranked:
+            ranked.remove(default)
+            ranked.insert(0, default)
+        return ranked[:limit]
 
     def _cohesion_scores(self, observation, vectors_to_center):
         """Estimate which sheep will remain the strongest outward outlier."""
@@ -162,7 +209,8 @@ class LowLevelController:
 
         if current_is_eligible:
             keep_for_minimum = (
-                self.repair_target_age < self._repair_target_minimum_hold(mode)
+                not self.repair_target_hold_released
+                and self.repair_target_age < self._repair_target_minimum_hold(mode)
             )
             current_is_competitive = (
                 scores[best]
@@ -175,7 +223,12 @@ class LowLevelController:
         self.repair_target_mode = mode
         self.repair_target_id = best
         self.repair_target_age = 1
+        self.repair_target_hold_released = False
         return best
+
+    def release_repair_target_hold(self):
+        """Allow immediate rule reassessment, retaining age and score hysteresis."""
+        self.repair_target_hold_released = True
 
     def _repair_target_minimum_hold(self, mode):
         if mode == "COHESION_PRIORITY":
@@ -186,6 +239,7 @@ class LowLevelController:
         self.repair_target_mode = None
         self.repair_target_id = None
         self.repair_target_age = 0
+        self.repair_target_hold_released = False
 
     def _select_mode(self, alarms):
         return rule_mode_for_alarms(alarms, self.settings.REPAIR_ENABLED)

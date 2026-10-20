@@ -7,9 +7,9 @@ import numpy as np
 import os
 import config
 
-COLOR_MAP = {'Normal': 'white', 'A': 'red', 'B': 'orange'}
-TRACE_COLOR_MAP = {'Normal': 'lightgray', 'A': 'red', 'B': 'orange'}
-LEGEND_LABELS = {'Normal': 'Normal (Flock)', 'A': 'Type A (Weak Response)', 'B': 'Type B (Dispersing)'}
+COLOR_MAP = {'Normal': 'white', 'A': 'red', 'B': 'orange', 'C': '#4c78a8'}
+TRACE_COLOR_MAP = {'Normal': 'lightgray', 'A': 'red', 'B': 'orange', 'C': '#4c78a8'}
+LEGEND_LABELS = {'Normal': 'Normal (Flock)', 'A': 'Type A (Weak Response)', 'B': 'Type B (Dispersing)', 'C': 'Type C (Near-Dog Sensitive)'}
 
 class Visualizer:
     def __init__(self, env):
@@ -33,6 +33,7 @@ class Visualizer:
             Line2D([0], [0], marker='o', color='w', label=LEGEND_LABELS['Normal'], markerfacecolor=COLOR_MAP['Normal'], markeredgecolor='gray', markersize=8),
             Line2D([0], [0], marker='o', color='w', label=LEGEND_LABELS['A'], markerfacecolor=COLOR_MAP['A'], markeredgecolor='gray', markersize=8),
             Line2D([0], [0], marker='o', color='w', label=LEGEND_LABELS['B'], markerfacecolor=COLOR_MAP['B'], markeredgecolor='gray', markersize=8),
+            Line2D([0], [0], marker='o', color='w', label=LEGEND_LABELS['C'], markerfacecolor=COLOR_MAP['C'], markeredgecolor='gray', markersize=8),
             Line2D([0], [0], marker='^', color='w', label='Dog', markerfacecolor='#333333', markersize=10)
         ]
         self.ax.legend(handles=legend_elements, loc='upper right')
@@ -129,6 +130,7 @@ class Visualizer:
             Line2D([0], [0], marker='o', color='w', label=LEGEND_LABELS['Normal'], markerfacecolor=COLOR_MAP['Normal'], markeredgecolor='gray', markersize=8),
             Line2D([0], [0], marker='o', color='w', label=LEGEND_LABELS['A'], markerfacecolor=COLOR_MAP['A'], markeredgecolor='gray', markersize=8),
             Line2D([0], [0], marker='o', color='w', label=LEGEND_LABELS['B'], markerfacecolor=COLOR_MAP['B'], markeredgecolor='gray', markersize=8),
+            Line2D([0], [0], marker='o', color='w', label=LEGEND_LABELS['C'], markerfacecolor=COLOR_MAP['C'], markeredgecolor='gray', markersize=8),
             Line2D([0], [0], marker='^', color='w', label='Dog', markerfacecolor='#333333', markersize=10)
         ]
         ax.legend(handles=legend_elements, loc='upper right')

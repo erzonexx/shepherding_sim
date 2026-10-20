@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from anomaly_behavior.run_splitting_repair_trial import SustainedMaxDetector
+from experiments.anomaly_behavior.run_splitting_repair_trial import SustainedMaxDetector
 
 
 class SplittingRepairTrialTests(unittest.TestCase):

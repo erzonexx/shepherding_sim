@@ -2,7 +2,7 @@
 
 import unittest
 
-from tests.anomaly_behavior.run_alarm_coverage_audit import (
+from experiments.anomaly_behavior.run_alarm_coverage_audit import (
     alarm_category,
     concurrent_episode_lengths,
     summarize,

@@ -1,5 +1,4 @@
 import argparse
-import json
 import time
 from environment import SwarmEnv
 from visualizer import Visualizer
@@ -9,17 +8,20 @@ import config
 from datetime import datetime
 import os
 from high_level_controller import build_controller
+from experiment_audit import begin_run_record, finish_run_record
 
 from config import SCENARIOS
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Run one shepherding simulation.")
+    parser.add_argument('--explicit-execution', action='store_true',
+                        help='Experimental FOLLOW_RULE versus deliberate COMMIT, full JSON only.')
     parser.add_argument(
         "--controller",
-        choices=("rule", "mock-llm", "openai", "deepseek"),
+        choices=("rule", "mock-llm", "openai", "deepseek", "vllm"),
         default=config.CONTROLLER_KIND,
-        help="Control architecture. API providers use asynchronous Responses calls.",
+        help="Control architecture. API providers use asynchronous calls.",
     )
     parser.add_argument(
         "--scenario", choices=("config", *SCENARIOS), default="config",
@@ -27,6 +29,7 @@ def parse_args(argv=None):
     )
     parser.add_argument("--abnormal-a", type=int, help="Override the number of Type A sheep.")
     parser.add_argument("--abnormal-b", type=int, help="Override the number of Type B sheep.")
+    parser.add_argument("--abnormal-c", type=int, help="Override the number of experimental Type C sheep.")
     seed_group = parser.add_mutually_exclusive_group()
     seed_group.add_argument("--seed", type=int, help="Fixed random seed for matched comparisons.")
     seed_group.add_argument("--random-seed", action="store_true", help="Random initial conditions.")
@@ -39,16 +42,33 @@ def parse_args(argv=None):
         "--video", action=argparse.BooleanOptionalAction, default=config.SAVE_ANIMATION_MP4,
         help="Export MP4 after the simulation.",
     )
+    parser.add_argument(
+        "--vllm-compact-output", action=argparse.BooleanOptionalAction, default=None,
+        help="Use compact m/t/h JSON for vllm; --no-vllm-compact-output restores verbose JSON.",
+    )
+    parser.add_argument(
+        "--vllm-prefix-priming", action=argparse.BooleanOptionalAction, default=None,
+        help="Warm fixed instructions once for vllm; requires VLLM_PREFIX_TOKEN_FILE.",
+    )
+    parser.add_argument(
+        "--vllm-input-format", choices=("json", "tables", "dedup"), default=None,
+        help="Use original JSON, experimental tables or deduplicated named JSON for vllm.",
+    )
     args = parser.parse_args(argv)
-    count_a, count_b = SCENARIOS.get(
-        args.scenario, (config.NUM_ABNORMAL_A, config.NUM_ABNORMAL_B)
+    for option in ("vllm_input_format", "vllm_prefix_priming", "vllm_compact_output"):
+        if getattr(args, option) is not None and args.controller != "vllm":
+            parser.error(f"--{option.replace('_', '-')} requires --controller vllm")
+    count_a, count_b, count_c = SCENARIOS.get(
+        args.scenario, (config.NUM_ABNORMAL_A, config.NUM_ABNORMAL_B, config.NUM_ABNORMAL_C)
     )
     args.abnormal_a = count_a if args.abnormal_a is None else args.abnormal_a
     args.abnormal_b = count_b if args.abnormal_b is None else args.abnormal_b
-    if args.abnormal_a < 0 or args.abnormal_b < 0:
+    args.abnormal_c = count_c if args.abnormal_c is None else args.abnormal_c
+    counts = (args.abnormal_a, args.abnormal_b, args.abnormal_c)
+    if min(counts) < 0:
         parser.error("Abnormal sheep counts must be nonnegative.")
-    if args.abnormal_a + args.abnormal_b > config.NUM_SHEEP:
-        parser.error(f"Type A + Type B cannot exceed NUM_SHEEP ({config.NUM_SHEEP}).")
+    if sum(counts) > config.NUM_SHEEP:
+        parser.error(f"Type A + Type B + Type C cannot exceed NUM_SHEEP ({config.NUM_SHEEP}).")
     if args.max_steps < 1:
         parser.error("--max-steps must be positive.")
     if args.seed is not None and not 0 <= args.seed <= 2**32 - 1:
@@ -57,12 +77,20 @@ def parse_args(argv=None):
 
 
 def apply_run_settings(args):
+    config.HIGH_LEVEL_EXPLICIT_EXECUTION = args.explicit_execution
     config.NUM_ABNORMAL_A = args.abnormal_a
     config.NUM_ABNORMAL_B = args.abnormal_b
+    config.NUM_ABNORMAL_C = args.abnormal_c
     config.MAX_STEPS = args.max_steps
     config.REPAIR_ENABLED = args.repair
     config.SAVE_ANIMATION_MP4 = args.video
     config.CONTROLLER_KIND = args.controller
+    if args.vllm_input_format is not None:
+        config.VLLM_INPUT_FORMAT = args.vllm_input_format
+    if args.vllm_compact_output is not None:
+        config.VLLM_COMPACT_OUTPUT = args.vllm_compact_output
+    if args.vllm_prefix_priming is not None:
+        config.VLLM_PREFIX_PRIMING = args.vllm_prefix_priming
     if args.seed is not None:
         config.USE_FIXED_SEED = True
         config.RANDOM_SEED = args.seed
@@ -77,7 +105,7 @@ def main(argv=None):
     print(f"Initializing simulation environment... ({mode_msg}, controller={args.controller})")
     print(
         f"Sheep: {config.NUM_SHEEP}, A: {config.NUM_ABNORMAL_A}, "
-        f"B: {config.NUM_ABNORMAL_B}, repair: {config.REPAIR_ENABLED}, "
+        f"B: {config.NUM_ABNORMAL_B}, C: {config.NUM_ABNORMAL_C}, repair: {config.REPAIR_ENABLED}, "
         f"max frames: {config.MAX_STEPS}, video: {config.SAVE_ANIMATION_MP4}"
     )
     try:
@@ -85,13 +113,17 @@ def main(argv=None):
     except RuntimeError as exc:
         raise SystemExit(f"Controller setup failed: {exc}") from None
     env = SwarmEnv(controller=controller)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    manifest_path = os.path.join(config.DATA_LOG_DIR, f"run_{timestamp}.json")
+    manifest = begin_run_record(manifest_path, controller, config,
+                                controller_kind=args.controller, scenario=args.scenario)
     detector = Detector(dispersion_threshold=config.DANGER_DISPERSION_THRESHOLD,
                           mean_spread_threshold=config.DANGER_MEAN_SPREAD_THRESHOLD,
                           stagnation_frames=config.DANGER_STAGNATION_FRAMES,
                           stagnation_threshold=config.DANGER_STAGNATION_THRESHOLD)
     vis = Visualizer(env)  
     vis.ax.set_title(
-        f"{args.controller} | A={config.NUM_ABNORMAL_A}, B={config.NUM_ABNORMAL_B} "
+        f"{args.controller} | A={config.NUM_ABNORMAL_A}, B={config.NUM_ABNORMAL_B}, C={config.NUM_ABNORMAL_C} "
         f"| seed={config.RANDOM_SEED if config.USE_FIXED_SEED else 'random'}"
     )
 
@@ -114,7 +146,7 @@ def main(argv=None):
         # 3. refresh the screen
         vis.render(env)
         if (
-            args.controller in ("openai", "deepseek")
+            args.controller in ("openai", "deepseek", "vllm")
             and getattr(env.controller, "pending_request", None) is not None
         ):
             time.sleep(config.LLM_PENDING_POLL_SECONDS)
@@ -131,15 +163,10 @@ def main(argv=None):
 
     # Export the recorded simulation data
     print("Exporting simulation data...")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     env.save_data_to_parquet(timestamp)
     env.save_control_to_parquet(timestamp)
-    settings = {
-        key: value for key, value in vars(config).items()
-        if key.isupper() and isinstance(value, (str, int, float, bool, type(None)))
-    }
-    with open(os.path.join(config.DATA_LOG_DIR, f"run_{timestamp}.json"), "w", encoding="utf-8") as metadata_file:
-        json.dump({"scenario": args.scenario, "config": settings}, metadata_file, indent=2)
+    finish_run_record(manifest_path, manifest, success=reached_goal,
+                      frames=env.current_frame)
     
     if config.SAVE_TRAJECTORY_PNG:
         vis.save_trajectory(env, timestamp)

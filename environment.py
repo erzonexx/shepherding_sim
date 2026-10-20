@@ -3,13 +3,22 @@ import config
 import pandas as pd
 import os
 import json
+from experiment_audit import TIMING_FIELDS, utc_now
 from control_types import ControlObservation
 from dynamics import advance_dog, advance_sheep
 from low_level_controller import LowLevelController
-from datetime import datetime
 
 class SwarmEnv:
     def __init__(self, controller=None):
+        counts = (config.NUM_ABNORMAL_A, config.NUM_ABNORMAL_B, config.NUM_ABNORMAL_C)
+        if min(counts) < 0 or sum(counts) > config.NUM_SHEEP:
+            raise ValueError("A + B + C counts must be nonnegative and cannot exceed NUM_SHEEP.")
+        if config.NUM_ABNORMAL_C and (
+            not 0 < config.TYPE_C_SENSITIVITY_RADIUS <= config.DOG_SENSING_RANGE
+            or not np.isfinite(config.WEIGHT_DOG_REPULSION_C_FACTOR)
+            or config.WEIGHT_DOG_REPULSION_C_FACTOR < 1.0
+        ):
+            raise ValueError("Type C needs a positive sensitivity radius within dog sensing range and a response factor >= 1.")
         if config.USE_FIXED_SEED:
             np.random.seed(config.RANDOM_SEED)
             
@@ -27,8 +36,11 @@ class SwarmEnv:
         np.random.shuffle(indices) # randomly pick sheep to be abnormal
         idx_A = indices[:config.NUM_ABNORMAL_A]
         idx_B = indices[config.NUM_ABNORMAL_A : config.NUM_ABNORMAL_A + config.NUM_ABNORMAL_B]
+        c_start = config.NUM_ABNORMAL_A + config.NUM_ABNORMAL_B
+        idx_C = indices[c_start : c_start + config.NUM_ABNORMAL_C]
         self.sheep_status[idx_A] = 'A'
         self.sheep_status[idx_B] = 'B'
+        self.sheep_status[idx_C] = 'C'
 
         # initialize the shepherd
         self.dog_pos = np.copy(self.dog_start_pos)
@@ -69,8 +81,8 @@ class SwarmEnv:
             'repair_enabled': int(config.REPAIR_ENABLED),
             'alarms': alarm_text,
             'current_mode': current_mode,
-            'decision_source': getattr(self, 'decision_source', 'rule'),
-            'decision_frame': getattr(self, 'decision_frame', frame),
+            'decision_source': self.decision_source,
+            'decision_frame': self.decision_frame,
             'high_level_status': self.decision_metadata.get('high_level_status'),
             'llm_request_id': self.decision_metadata.get('request_id'),
             'llm_trigger_frame': self.decision_metadata.get('trigger_frame'),
@@ -82,10 +94,18 @@ class SwarmEnv:
                 self.decision_metadata.get('state_summary'), sort_keys=True
             ),
             'llm_selected_mode': self.decision_metadata.get('selected_mode'),
+            'llm_execution_policy': self.decision_metadata.get('execution_policy'),
+            'llm_selected_target_sheep_id': self.decision_metadata.get('selected_target_sheep_id'),
+            'llm_rule_target_sheep_id': self.decision_metadata.get('rule_target_sheep_id'),
+            'llm_target_override': bool(self.decision_metadata.get('target_override', False)),
+            'llm_response_target_sheep_id': json.dumps(
+                self.decision_metadata.get('response_target_sheep_id')
+            ),
             'llm_reference_mode': self.decision_metadata.get('reference_mode'),
             'llm_selection_correct': self.decision_metadata.get('selection_correct'),
             'llm_latency_frames': self.decision_metadata.get('latency_frames'),
             'llm_latency_seconds': self.decision_metadata.get('latency_seconds'),
+            **{'llm_' + key: self.decision_metadata.get(key) for key in TIMING_FIELDS},
             'llm_hold_frames': self.decision_metadata.get('hold_frames'),
             'llm_response_mode': self.decision_metadata.get('response_mode'),
             'llm_response_hold_frames': self.decision_metadata.get(
@@ -93,6 +113,7 @@ class SwarmEnv:
             ),
             'llm_reason': self.decision_metadata.get('reason'),
             'llm_model': self.decision_metadata.get('model'),
+            'llm_served_model': self.decision_metadata.get('served_model'),
             'llm_prompt_version': self.decision_metadata.get('prompt_version'),
             'llm_cache_hit': self.decision_metadata.get('cache_hit'),
             'llm_response_id': self.decision_metadata.get('response_id'),
@@ -144,7 +165,7 @@ class SwarmEnv:
         final_df.to_parquet(export_path, engine='pyarrow')
         
         parquet_files = [os.path.join(config.DATA_LOG_DIR, f) for f in os.listdir(config.DATA_LOG_DIR) if f.endswith('.parquet')]
-        if len(parquet_files) > config.MAX_LOG_FILES:
+        if config.LOG_RETENTION_ENABLED and len(parquet_files) > config.MAX_LOG_FILES:
             parquet_files.sort(key=os.path.getmtime)
             for f in parquet_files[:-config.MAX_LOG_FILES]:
                 try:
@@ -168,7 +189,7 @@ class SwarmEnv:
         df_control.to_parquet(export_path, engine='pyarrow')
 
         control_files = [os.path.join(config.CONTROL_LOG_DIR, f) for f in os.listdir(config.CONTROL_LOG_DIR) if f.endswith('.parquet')]
-        if len(control_files) > config.MAX_LOG_FILES:
+        if config.LOG_RETENTION_ENABLED and len(control_files) > config.MAX_LOG_FILES:
             control_files.sort(key=os.path.getmtime)
             for f in control_files[:-config.MAX_LOG_FILES]:
                 try:
@@ -223,6 +244,24 @@ class SwarmEnv:
         )
         decision = self.controller.decide(observation)
         self._apply_control_decision(decision)
+
+        # Mark actual first use, after validation and immediately before movement.
+        if (self.decision_metadata.get('high_level_status') == 'active'
+                and self.decision_metadata.get('first_applied_frame') is None):
+            applied = {
+                'first_applied_frame': frame,
+                'first_applied_at_utc': utc_now(),
+            }
+            observed = getattr(self.controller, 'active_request', None)
+            observed_clock = getattr(observed, 'observed_perf_counter', None)
+            if observed_clock is not None:
+                import time
+                applied['observation_to_apply_seconds'] = time.perf_counter() - observed_clock
+            self.decision_metadata.update(applied)
+            self.controller.active_response_metadata.update(applied)
+            audit = getattr(getattr(self.controller, 'backend', None), 'record_event', None)
+            if audit is not None:
+                audit('applied', self.decision_metadata.get('request_id'), **applied)
 
         dog_pos_before = np.copy(self.dog_pos)
         self.dog_pos, self.dog_vel = advance_dog(

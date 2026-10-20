@@ -18,15 +18,15 @@ FORECAST_MODES = (
 def forecast_modes(observation, settings, low_level_controller=None):
     horizon = max(1, int(settings.HIGH_LEVEL_FORECAST_FRAMES))
     return {
-        mode: _forecast_mode(
+        mode: forecast_mode(
             observation, mode, horizon, settings, low_level_controller
         )
         for mode in FORECAST_MODES
     }
 
 
-def _forecast_mode(observation, mode, horizon, settings,
-                   low_level_controller=None):
+def forecast_mode(observation, mode, horizon, settings,
+                  low_level_controller=None, target_sheep_id=None):
     positions = np.array(observation.sheep_positions, dtype=float, copy=True)
     velocities = observation.sheep_velocities
     if velocities is None or np.shape(velocities) != np.shape(positions):
@@ -51,6 +51,7 @@ def _forecast_mode(observation, mode, horizon, settings,
     minimum_boundary_margin = initial["boundary_margin"]
     splitting_frames = 0
     dog_travel = 0.0
+    target_finished = False
     controller = (
         copy.copy(low_level_controller)
         if low_level_controller is not None
@@ -71,7 +72,8 @@ def _forecast_mode(observation, mode, horizon, settings,
         )
         decision = controller.decide(
             forecast_observation,
-            mode_override=mode,
+            mode_override=None if target_finished else mode,
+            target_override=target_sheep_id,
         )
         next_dog_position, dog_velocity = advance_dog(
             dog_position,
@@ -93,6 +95,9 @@ def _forecast_mode(observation, mode, horizon, settings,
         current_inside = _inside_goal(positions, goal_position, settings)
         goal_exits += int(np.sum(previous_inside & ~current_inside))
         previous_inside = current_inside
+        if target_sheep_id is not None and current_inside[target_sheep_id]:
+            target_sheep_id = None
+            target_finished = True
         peak_out_of_bounds = max(
             peak_out_of_bounds,
             metrics["out_of_bounds"],

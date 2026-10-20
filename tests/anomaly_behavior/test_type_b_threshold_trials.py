@@ -1,6 +1,6 @@
 import unittest
 
-from anomaly_behavior.run_type_b_threshold_trials import (
+from experiments.anomaly_behavior.run_type_b_threshold_trials import (
     compare_shared_frames,
     threshold_counts,
 )

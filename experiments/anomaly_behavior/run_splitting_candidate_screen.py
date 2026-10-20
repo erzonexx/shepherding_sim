@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 
 import config
 from run_experiments import CASES
-from tests.anomaly_behavior.run_type_b_threshold_trials import POST_START_FRAME
+from experiments.anomaly_behavior.run_type_b_threshold_trials import POST_START_FRAME
 from tools.diagnose_failures import diagnose
 
 

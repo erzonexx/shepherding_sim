@@ -1,16 +1,19 @@
-"""Event-triggered high-level mode selection for shepherd control."""
+"""Event-triggered mode and repair-target selection for shepherd control."""
 
 import copy
 from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Optional, Protocol
+import time
 
 import numpy as np
 
 import config
 from control_types import ControlDecision, ControlObservation
 from low_level_controller import LowLevelController, rule_mode_for_alarms
-from mode_forecast import forecast_modes
+from mode_forecast import forecast_mode, forecast_modes
+from experiment_audit import TIMING_FIELDS, utc_now
+import target_handoff
 
 
 ALLOWED_MODES = {
@@ -27,6 +30,8 @@ class HighLevelRequest:
     alarms: tuple[str, ...]
     primary_alarm: str
     state_summary: dict[str, Any]
+    observed_at_utc: Optional[str] = None
+    observed_perf_counter: Optional[float] = None
 
 
 class HighLevelBackend(Protocol):
@@ -80,10 +85,11 @@ class MockLLMBackend:
 
 
 class HighLevelController:
-    """Keep low-level control active while a mode request is pending."""
+    """Keep low-level control active while a coordination request is pending."""
 
     def __init__(self, low_level_controller=None, backend=None, settings=config):
         self.settings = settings
+        target_handoff.validate_settings(settings)
         self.low_level_controller = low_level_controller or LowLevelController(settings)
         self.backend = backend or MockLLMBackend(
             latency_frames=settings.MOCK_LLM_LATENCY_FRAMES,
@@ -95,6 +101,7 @@ class HighLevelController:
         self.active_started_frame = None
         self.active_until_frame = None
         self.active_hold_frames = None
+        self.active_target_id = None
         self.active_request = None
         self.active_latency_frames = None
         self.active_response_metadata = {}
@@ -107,8 +114,10 @@ class HighLevelController:
         self.alarm_started_frame = None
         self.concurrent_alarm_frames = 0
         self.concurrent_request_submitted = False
+        self.alarm_distance_history = deque(maxlen=int(settings.DANGER_STAGNATION_FRAMES))
 
     def decide(self, observation: ControlObservation) -> ControlDecision:
+        self._observation_clock = (utc_now(), time.perf_counter())
         alarms = self._known_alarms(observation.alarms)
         state_summary = self._observe_state(observation, alarms)
         concurrent_only = getattr(
@@ -148,8 +157,13 @@ class HighLevelController:
             self._clear_pending()
         release_event = None
         if self.active_mode is not None:
-            release_reason = self._active_release_reason(
-                alarms, observation.frame
+            release_reason = (
+                "target_no_longer_eligible"
+                if self.active_target_id is not None
+                and not self.low_level_controller.repair_target_is_eligible(
+                    observation, self.active_target_id
+                )
+                else self._active_release_reason(alarms, observation.frame)
             )
             if release_reason is not None:
                 release_event = self._release_active(
@@ -163,8 +177,12 @@ class HighLevelController:
                 self.pending_request.request_id, observation.frame
             )
             if response is not None:
+                response = dict(response) if isinstance(response, Mapping) else response
+                if isinstance(response, dict):
+                    response.setdefault('consumed_at_utc', utc_now())
+                    response.setdefault('consumed_frame', observation.frame)
                 validation_summary = self._with_mode_forecasts(
-                    observation, state_summary
+                    observation, state_summary, response=response
                 )
                 mode, hold_frames, rejection_reason = self._validate_response(
                     response,
@@ -173,14 +191,36 @@ class HighLevelController:
                     validation_summary,
                 )
                 request = self.pending_request
+                if isinstance(response, dict):
+                    response.update(validated_at_utc=utc_now(),
+                                    latency_frames=observation.frame - request.trigger_frame)
+                    audit = getattr(self.backend, 'record_event', None)
+                    if audit is not None:
+                        audit('validated', request.request_id, frame=observation.frame,
+                              accepted=rejection_reason is None,
+                              rejection_reason=rejection_reason)
                 completed_request = request
                 self.pending_request = None
                 if rejection_reason is None:
+                    target_delegation = (
+                        target_handoff.enabled(self.settings)
+                        and target_handoff.delegates(response.get('target_sheep_id'),
+                            validation_summary['delivery_rule_target_sheep_id'])
+                    )
+                    if target_delegation or (getattr(self.settings, 'HIGH_LEVEL_EXPLICIT_EXECUTION', False)
+                            and response.get('execution_policy') == 'FOLLOW_RULE'):
+                        self._clear_active()
+                        self.retry_after_frame = observation.frame + self.settings.HIGH_LEVEL_RETRY_FRAMES
+                        return self._low_level_decision(
+                            observation, status='delegated', request=request,
+                            response_metadata=self._response_metadata(response),
+                            release_event=release_event)
                     self.active_mode = mode
                     self.active_alarms = request.alarms
                     self.active_started_frame = observation.frame
                     self.active_until_frame = observation.frame + hold_frames
                     self.active_hold_frames = hold_frames
+                    self.active_target_id = response.get("target_sheep_id")
                     self.active_request = request
                     self.active_latency_frames = (
                         observation.frame - request.trigger_frame
@@ -203,9 +243,21 @@ class HighLevelController:
                 hold_frames=self.active_hold_frames,
                 response_metadata=self.active_response_metadata,
                 release_event=release_event,
+                selected_target_id=self.active_target_id,
             )
+            rule_decision = copy.copy(self.low_level_controller).decide(observation)
             decision = self.low_level_controller.decide(
-                observation, mode_override=self.active_mode
+                observation, mode_override=(
+                    self.active_mode
+                    if getattr(self.settings, "HIGH_LEVEL_MODE_SELECTION_ENABLED", True)
+                    else None
+                ),
+                target_override=self.active_target_id,
+            )
+            metadata["rule_target_sheep_id"] = rule_decision.target_sheep_id
+            metadata["target_override"] = (
+                decision.mode == rule_decision.mode
+                and decision.target_sheep_id != rule_decision.target_sheep_id
             )
             return replace(
                 decision,
@@ -221,6 +273,7 @@ class HighLevelController:
         if (
             self.pending_request is None
             and observation.frame >= self.retry_after_frame
+            and self._request_ready(observation, state_summary)
             and (
                 not concurrent_only
                 or (
@@ -287,6 +340,9 @@ class HighLevelController:
             ),
         )
 
+    def _request_ready(self, observation, state_summary):
+        return True
+
     def _make_request(self, observation, alarms, state_summary):
         self.request_counter += 1
         return HighLevelRequest(
@@ -295,8 +351,10 @@ class HighLevelController:
             alarms=alarms,
             primary_alarm=self._primary_alarm(alarms),
             state_summary=self._with_mode_forecasts(
-                observation, state_summary
+                observation, state_summary, include_targets=True
             ),
+            observed_at_utc=self._observation_clock[0],
+            observed_perf_counter=self._observation_clock[1],
         )
 
     def _validate_response(self, response, frame, alarms, current_summary):
@@ -314,8 +372,53 @@ class HighLevelController:
         if frame - request.trigger_frame > self.settings.HIGH_LEVEL_MAX_RESPONSE_AGE_FRAMES:
             return None, None, "response_stale"
         mode = response.get("mode")
-        if mode not in ALLOWED_MODES:
+        if not isinstance(mode, str) or mode not in ALLOWED_MODES:
             return None, None, "mode_not_allowed"
+        if getattr(self.settings, 'HIGH_LEVEL_EXPLICIT_EXECUTION', False):
+            from execution_contract import POLICIES
+            policy = response.get('execution_policy')
+            if policy not in POLICIES:
+                return None, None, 'execution_policy_not_allowed'
+            if policy == 'FOLLOW_RULE':
+                if mode != request.state_summary.get('rule_mode') or response.get('target_sheep_id') is not None:
+                    return None, None, 'invalid_rule_delegation'
+                hold = response.get('hold_frames')
+                if type(hold) is not int or not self.settings.HIGH_LEVEL_MIN_HOLD_FRAMES <= hold <= self.settings.HIGH_LEVEL_MAX_HOLD_FRAMES:
+                    return None, None, 'hold_frames_out_of_range'
+                return current_summary['rule_mode'], hold, None
+        if not getattr(self.settings, "HIGH_LEVEL_MODE_SELECTION_ENABLED", True):
+            if mode != request.state_summary.get("rule_mode"):
+                return None, None, "mode_selection_disabled"
+            if mode != current_summary.get("rule_mode"):
+                return None, None, "rule_mode_changed"
+        target = response.get("target_sheep_id")
+        if target is not None:
+            if not getattr(self.settings, "HIGH_LEVEL_TARGET_SELECTION_ENABLED", True):
+                return None, None, "target_selection_disabled"
+            if mode == "TARGET_TRACKING":
+                return None, None, "target_requires_repair_mode"
+            if not isinstance(target, int) or isinstance(target, bool):
+                return None, None, "target_not_integer"
+            offered = request.state_summary.get("repair_candidates", {}).get(mode, [])
+            if not any(item["target_id"] == target for item in offered):
+                return None, None, "target_not_offered"
+        if target_handoff.enabled(self.settings):
+            if not {'flock_splitting', 'stagnation'} <= set(alarms):
+                return None, None, 'concurrent_alarms_cleared'
+            if target_handoff.delegates(target, current_summary['delivery_rule_target_sheep_id']):
+                hold = response.get('hold_frames')
+                if type(hold) is not int:
+                    return None, None, 'hold_frames_not_integer'
+                if not self.settings.HIGH_LEVEL_MIN_HOLD_FRAMES <= hold <= self.settings.HIGH_LEVEL_MAX_HOLD_FRAMES:
+                    return None, None, 'hold_frames_out_of_range'
+                return current_summary['rule_mode'], hold, None
+        if current_summary.get("target_selection_error"):
+            return None, None, current_summary["target_selection_error"]
+        if (
+            target is not None
+            and current_summary.get("selected_target_candidate", {}).get("target_id") != target
+        ):
+            return None, None, "target_forecast_missing"
         required_alarm = {
             "COHESION_PRIORITY": "flock_splitting",
             "HARD_TO_GUIDE": "stagnation",
@@ -326,24 +429,46 @@ class HighLevelController:
             "COHESION_PRIORITY": "cohesion_candidate",
             "HARD_TO_GUIDE": "hard_to_guide_candidate",
         }.get(mode)
+        selected_target = current_summary.get("selected_target_candidate")
         candidate = current_summary.get(candidate_key, {}) if candidate_key else {}
+        if selected_target is not None:
+            candidate = selected_target
         boundary_margin = candidate.get("drive_point_boundary_margin")
         if (
             isinstance(boundary_margin, (int, float))
             and boundary_margin < 0.0
         ):
             return None, None, "candidate_drive_point_out_of_bounds"
+        request_summary = request.state_summary
+        selection_summary = current_summary
+        if selected_target is not None:
+            request_candidate = next(
+                item for item in request_summary["repair_candidates"][mode]
+                if item["target_id"] == response["target_sheep_id"]
+            )
+            request_summary = dict(request_summary)
+            request_summary["mode_forecasts"] = {
+                **request_summary["mode_forecasts"], mode: request_candidate["forecast"]
+            }
+            selection_summary = dict(current_summary)
+            selection_summary["mode_forecasts"] = {
+                **current_summary["mode_forecasts"], mode: selected_target["forecast"]
+            }
         if self._forecast_preference_reversed(
-            mode, request.state_summary, current_summary
+            mode, request_summary, selection_summary
         ):
             return None, None, "forecast_preference_reversed"
         dominating_mode = self._dominating_forecast_mode(
             mode,
             alarms,
-            current_summary.get("mode_forecasts", {}),
+            selection_summary.get("mode_forecasts", {}),
         )
         if dominating_mode is not None:
             return None, None, f"forecast_dominated_by_{dominating_mode.lower()}"
+        if selected_target is not None:
+            fallback_forecast = current_summary["mode_forecasts"][mode]
+            if self._forecast_dominates(fallback_forecast, selected_target["forecast"]):
+                return None, None, "forecast_dominated_by_rule_target"
         hold_frames = response.get("hold_frames")
         if isinstance(hold_frames, bool) or not isinstance(hold_frames, int):
             return None, None, "hold_frames_not_integer"
@@ -386,13 +511,143 @@ class HighLevelController:
             and current_choice[1] > current_fallback[1]
         )
 
-    def _with_mode_forecasts(self, observation, state_summary):
+    def _with_mode_forecasts(
+        self, observation, state_summary, include_targets=False, response=None
+    ):
         summary = dict(state_summary)
+        if target_handoff.enabled(self.settings):
+            return self._with_target_handoff_forecasts(observation, summary, include_targets, response)
+        if getattr(self.settings, 'HIGH_LEVEL_EXPLICIT_EXECUTION', False):
+            return self._with_execution_forecasts(observation, summary, include_targets, response)
         summary["mode_forecasts"] = forecast_modes(
             observation,
             self.settings,
             self.low_level_controller,
         )
+        if include_targets:
+            summary["repair_candidates"] = {
+                mode: [
+                    self._target_candidate(observation, mode, target)
+                    for target in self.low_level_controller.repair_candidates(observation, mode)
+                ]
+                for mode in ("HARD_TO_GUIDE", "COHESION_PRIORITY")
+            }
+        self._add_selected_target_forecast(observation, summary, response)
+        return summary
+
+    def _with_target_handoff_forecasts(self, observation, summary, include_targets, response):
+        hold = response.get('hold_frames') if isinstance(response, Mapping) else None
+        if type(hold) is not int or not self.settings.HIGH_LEVEL_MIN_HOLD_FRAMES <= hold <= self.settings.HIGH_LEVEL_MAX_HOLD_FRAMES:
+            hold = int(self.settings.HIGH_LEVEL_FORECAST_FRAMES)
+        horizon = max(1, int(self.settings.HIGH_LEVEL_FORECAST_FRAMES))
+        rule = copy.copy(self.low_level_controller).decide(observation)
+        def predict(mode, target=None):
+            return target_handoff.forecast_action(observation, mode, hold, horizon, self.settings,
+                self.low_level_controller, self.alarm_distance_history, target)
+        summary['target_handoff'] = dict(version=target_handoff.VERSION, forecast_hold_frames=hold,
+            admission_requires_both_alarms=True, same_target_delegates=True,
+            release_waives_inherited_minimum_hold=True)
+        summary['delivery_rule_target_sheep_id'] = rule.target_sheep_id
+        summary['rule_forecast'] = predict(summary['rule_mode'])
+        summary['mode_forecasts'] = {mode: predict(mode) for mode in ALLOWED_MODES}
+        if include_targets:
+            summary['repair_candidates'] = {
+                mode: [self._target_candidate(observation, mode, target, hold)
+                    for target in self.low_level_controller.repair_candidates(observation, mode)]
+                for mode in ('HARD_TO_GUIDE', 'COHESION_PRIORITY')}
+        self._add_selected_target_forecast(observation, summary, response, hold, exact_integer=True)
+        return summary
+
+    def _with_execution_forecasts(self, observation, summary, include_targets, response):
+        from execution_contract import forecast_execution, VERSION
+        # Delegation needs identity/age checks, not intervention-geometry rejection.
+        if isinstance(response, Mapping) and response.get('execution_policy') == 'FOLLOW_RULE':
+            return summary
+        hold = response.get('hold_frames') if isinstance(response, Mapping) else None
+        if type(hold) is not int or not self.settings.HIGH_LEVEL_MIN_HOLD_FRAMES <= hold <= self.settings.HIGH_LEVEL_MAX_HOLD_FRAMES:
+            hold = int(self.settings.HIGH_LEVEL_FORECAST_FRAMES)
+        horizon = max(1, int(self.settings.HIGH_LEVEL_FORECAST_FRAMES))
+        def predict(mode, target=None, policy='COMMIT'):
+            return forecast_execution(observation, mode, hold, horizon, self.settings,
+                self.low_level_controller, self.alarm_distance_history, target, policy,
+                self.pending_request.alarms if self.pending_request is not None else observation.alarms)
+        summary['execution_contract'] = dict(version=VERSION, forecast_hold_frames=hold,
+            follow_rule_cooldown_frames=self.settings.HIGH_LEVEL_RETRY_FRAMES)
+        summary['rule_forecast'] = predict(summary['rule_mode'], policy='FOLLOW_RULE')
+        summary['mode_forecasts'] = {mode: predict(mode) for mode in ALLOWED_MODES}
+        if include_targets:
+            summary['repair_candidates'] = {
+                mode: [self._target_candidate(observation, mode, target, hold)
+                       for target in self.low_level_controller.repair_candidates(observation, mode)]
+                for mode in ('HARD_TO_GUIDE', 'COHESION_PRIORITY')}
+        self._add_selected_target_forecast(observation, summary, response, hold, exact_integer=True)
+        return summary
+
+    def _add_selected_target_forecast(
+        self, observation, summary, response, hold_frames=None, *, exact_integer=False
+    ):
+        """Share target checks across forecast contracts without changing their semantics."""
+        if not isinstance(response, Mapping) or response.get('target_sheep_id') is None:
+            return
+        mode, target = response.get('mode'), response['target_sheep_id']
+        offered = (
+            self.pending_request.state_summary.get('repair_candidates', {}).get(mode, [])
+            if isinstance(mode, str) else []
+        )
+        integer = type(target) is int if exact_integer else isinstance(target, int) and not isinstance(target, bool)
+        if mode not in ('HARD_TO_GUIDE', 'COHESION_PRIORITY'):
+            summary['target_selection_error'] = 'target_requires_repair_mode'
+        elif not integer:
+            summary['target_selection_error'] = 'target_not_integer'
+        elif not any(item['target_id'] == target for item in offered):
+            summary['target_selection_error'] = 'target_not_offered'
+        elif not self.low_level_controller.repair_target_is_eligible(observation, target):
+            summary['target_selection_error'] = 'target_no_longer_eligible'
+        else:
+            summary['selected_target_candidate'] = self._target_candidate(observation, mode, target, hold_frames)
+
+    def _target_candidate(self, observation, mode, target_id, hold_frames=None):
+        positions = observation.sheep_positions
+        center = np.mean(positions, axis=0)
+        goal_vectors = observation.goal_position - positions
+        center_vectors = positions - center
+        goal_distances = np.linalg.norm(goal_vectors, axis=1)
+        center_distances = np.linalg.norm(center_vectors, axis=1)
+        velocities = self.low_level_controller._velocities(observation)
+        goalward = np.sum(
+            velocities * goal_vectors / (goal_distances[:, None] + self.settings.EPSILON),
+            axis=1,
+        )
+        outward = np.sum(
+            (velocities - np.mean(velocities, axis=0)) * center_vectors
+            / (center_distances[:, None] + self.settings.EPSILON),
+            axis=1,
+        )
+        decision = copy.copy(self.low_level_controller).decide(
+            observation, mode_override=mode, target_override=target_id
+        )
+        summary = self._candidate_summary(
+            target_id, self._normalized_statuses(observation.sheep_statuses, len(positions)),
+            positions, observation.dog_position, decision.drive_point,
+            goal_distances, center_distances, goalward, outward,
+        )
+        if target_handoff.enabled(self.settings):
+            summary['forecast'] = target_handoff.forecast_action(observation, mode,
+                int(self.settings.HIGH_LEVEL_FORECAST_FRAMES) if hold_frames is None else hold_frames,
+                max(1, int(self.settings.HIGH_LEVEL_FORECAST_FRAMES)), self.settings,
+                self.low_level_controller, self.alarm_distance_history, target_id)
+        elif getattr(self.settings, 'HIGH_LEVEL_EXPLICIT_EXECUTION', False):
+            from execution_contract import forecast_execution
+            summary['forecast'] = forecast_execution(observation, mode,
+                int(self.settings.HIGH_LEVEL_FORECAST_FRAMES) if hold_frames is None else hold_frames,
+                max(1, int(self.settings.HIGH_LEVEL_FORECAST_FRAMES)), self.settings,
+                self.low_level_controller, self.alarm_distance_history, target_id,
+                trigger_alarms=self.pending_request.alarms if self.pending_request is not None else observation.alarms)
+        else:
+            summary["forecast"] = forecast_mode(
+                observation, mode, max(1, int(self.settings.HIGH_LEVEL_FORECAST_FRAMES)),
+                self.settings, self.low_level_controller, target_sheep_id=target_id,
+            )
         return summary
 
     def _dominating_forecast_mode(self, selected_mode, alarms, forecasts):
@@ -438,6 +693,11 @@ class HighLevelController:
         return request.alarms == alarms
 
     def _active_release_reason(self, alarms, frame):
+        if (
+            not getattr(self.settings, "HIGH_LEVEL_MODE_SELECTION_ENABLED", True)
+            and self.active_mode != rule_mode_for_alarms(alarms, self.settings.REPAIR_ENABLED)
+        ):
+            return "rule_mode_changed"
         if frame >= self.active_until_frame:
             return "max_hold_reached"
         if not getattr(self.backend, "trigger_on_concurrent_only", False):
@@ -481,6 +741,7 @@ class HighLevelController:
     def _observe_state(self, observation, alarms):
         positions = observation.sheep_positions
         center = np.mean(positions, axis=0)
+        self.alarm_distance_history.append(float(np.linalg.norm(observation.goal_position - center)))
         vectors_from_center = positions - center
         vectors_to_goal = observation.goal_position - positions
         distances_to_center = np.linalg.norm(vectors_from_center, axis=1)
@@ -503,8 +764,10 @@ class HighLevelController:
             distances_to_center[:, np.newaxis] + self.settings.EPSILON
         )
         goalward_speeds = np.sum(velocities * goal_directions, axis=1)
-        outward_speeds = np.sum(velocities * outward_directions, axis=1)
         centroid_velocity = np.mean(velocities, axis=0)
+        # A translating flock is not dispersing: measure radial motion relative
+        # to its moving centroid, exactly as in _target_candidate.
+        outward_speeds = np.sum((velocities - centroid_velocity) * outward_directions, axis=1)
         centroid_to_goal = observation.goal_position - center
         centroid_distance = np.linalg.norm(centroid_to_goal)
         centroid_goalward_speed = float(
@@ -536,7 +799,7 @@ class HighLevelController:
             self.alarm_started_frame = observation.frame if alarms else None
 
         oldest = self.state_history[0]
-        return {
+        summary = {
             "alarms": list(alarms),
             "primary_alarm": self._primary_alarm(alarms),
             "rule_mode": self._rule_mode(alarms),
@@ -621,6 +884,14 @@ class HighLevelController:
                 outward_speeds,
             ),
         }
+        if "C" in statuses:
+            summary["type_c_count"] = statuses.count("C")
+            summary["type_c_response"] = {
+                "sensitivity_radius": self.settings.TYPE_C_SENSITIVITY_RADIUS,
+                "max_dog_repulsion_factor": self.settings.WEIGHT_DOG_REPULSION_C_FACTOR,
+                "behavior": "Normal flocking; dog repulsion rises linearly as distance falls below sensitivity_radius; normal speed cap.",
+            }
+        return summary
 
     def _normalized_statuses(self, statuses, count):
         normalized = list(statuses[:count])
@@ -689,9 +960,11 @@ class HighLevelController:
     ):
         summaries = {}
         status_array = np.asarray(statuses)
-        for status in ("A", "B"):
+        for status in ("A", "B", "C"):
             mask = status_array == status
             count = int(np.sum(mask))
+            if status == "C" and count == 0:
+                continue
             if count == 0:
                 summaries[status] = {"count": 0}
                 continue
@@ -711,6 +984,8 @@ class HighLevelController:
             "latency_seconds",
             "cache_hit",
             "model",
+            "served_model",
+            "execution_policy",
             "prompt_version",
             "response_id",
             "response_status",
@@ -718,6 +993,8 @@ class HighLevelController:
             "input_tokens",
             "output_tokens",
             "backend_error",
+            "latency_frames",
+            *TIMING_FIELDS,
         )
         metadata = {
             key: response.get(key)
@@ -728,6 +1005,7 @@ class HighLevelController:
             metadata["response_mode"] = response.get("mode")
         if response.get("hold_frames") is not None:
             metadata["response_hold_frames"] = response.get("hold_frames")
+        metadata["response_target_sheep_id"] = response.get("target_sheep_id")
         return metadata
 
     def _reference_mode(self, alarms):
@@ -747,6 +1025,7 @@ class HighLevelController:
         rejection_reason=None,
         response_metadata=None,
         release_event=None,
+        selected_target_id=None,
     ):
         reference_mode = self._reference_mode(request.alarms) if request else None
         metadata = {
@@ -757,6 +1036,7 @@ class HighLevelController:
             "trigger_alarms": list(request.alarms) if request else None,
             "state_summary": request.state_summary if request else None,
             "selected_mode": selected_mode,
+            "selected_target_sheep_id": selected_target_id,
             "reference_mode": reference_mode,
             "selection_correct": (
                 selected_mode == reference_mode
@@ -793,6 +1073,7 @@ class HighLevelController:
         self.active_started_frame = None
         self.active_until_frame = None
         self.active_hold_frames = None
+        self.active_target_id = None
         self.active_request = None
         self.active_latency_frames = None
         self.active_response_metadata = {}
@@ -808,6 +1089,8 @@ class HighLevelController:
             "mode": self.active_mode,
             "active_frames": max(0, frame - self.active_started_frame),
         }
+        if target_handoff.enabled(self.settings) and self.active_target_id is not None:
+            self.low_level_controller.release_repair_target_hold()
         self._clear_active()
         return event
 
@@ -823,10 +1106,11 @@ def build_controller(kind="rule", settings=config):
         return LowLevelController(settings)
     if kind == "mock-llm":
         return HighLevelController(settings=settings)
-    if kind in ("openai", "deepseek"):
+    if kind in ("openai", "deepseek", "vllm"):
         from responses_api_backend import DeepSeekBackend, OpenAIBackend
+        from vllm_backend import VLLMBackend
 
-        backend_class = OpenAIBackend if kind == "openai" else DeepSeekBackend
+        backend_class = {"openai": OpenAIBackend, "deepseek": DeepSeekBackend, "vllm": VLLMBackend}[kind]
         return HighLevelController(
             backend=backend_class(settings=settings), settings=settings
         )
