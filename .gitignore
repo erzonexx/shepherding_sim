@@ -10,6 +10,17 @@ outputs/
 # Chat handoff notes (contain lab machine connection details)
 CHAT_HANDOFF_*.md
 
+# Reports, slides, and posters are kept locally, never in the repository
+*.pptx
+*.ppt
+*.docx
+*.doc
+*.pdf
+*.xlsx
+*.key
+*.zip
+~$*
+
 # Local API credentials
 .env
 .env.*
