@@ -34,7 +34,7 @@ exclude future model answers. They are short-horizon estimates, not safety proof
 
 def forecast_execution(observation, mode, hold_frames, horizon, settings,
                        low_level_controller, alarm_history, target_sheep_id=None,
-                       execution_policy="COMMIT", trigger_alarms=None):
+                       execution_policy="COMMIT", trigger_alarms=None, return_trace=False):
     """No API calls; clone low-level memory and execute the actual high-level class.
 
     alarm_history includes the detector sample at observation.frame. The first
@@ -47,6 +47,12 @@ def forecast_execution(observation, mode, hold_frames, horizon, settings,
         trigger_on_concurrent_only = True
 
     class ShadowController(HighLevelController):
+        def _observe_state(self, observation, alarms):
+            # No pending replies or future requests exist in this shadow run.
+            # Prompt/report summaries cannot affect its decisions. Detector below
+            # maintains the alarm history; real hold/release and motion still run.
+            return {}
+
         def _request_ready(self, observation, state_summary):
             return False
 
@@ -82,6 +88,7 @@ def forecast_execution(observation, mode, hold_frames, horizon, settings,
     travel = 0.
     release_offset = release_reason = None
     current_mode = observation.current_mode
+    trace = [] if return_trace else None
     for offset in range(horizon):
         if inside.all():
             break
@@ -108,9 +115,13 @@ def forecast_execution(observation, mode, hold_frames, horizon, settings,
         splitting += int(metrics['max_spread'] > settings.DANGER_DISPERSION_THRESHOLD
                          and metrics['mean_spread'] > settings.DANGER_MEAN_SPREAD_THRESHOLD)
         simulated += 1
+        if trace is not None:
+            trace.append(dict(sheep_positions=positions.tolist(),sheep_velocities=velocities.tolist(),
+                dog_position=dog.tolist(),dog_velocity=dog_velocity.tolist(),
+                mode=decision.mode,target_sheep_id=decision.target_sheep_id))
         alarms = tuple(detector.detect(positions, goal)[0])
     final = _flock_metrics(positions, goal, settings)
-    return dict(
+    result = dict(
         horizon_frames=horizon,
         centroid_progress=round(initial['centroid_distance'] - final['centroid_distance'], 3),
         final_centroid_distance=round(final['centroid_distance'], 3),
@@ -127,3 +138,6 @@ def forecast_execution(observation, mode, hold_frames, horizon, settings,
         simulated_frames=simulated, committed_frames=committed,
         release_offset=release_offset, release_reason=release_reason,
     )
+    if trace is not None:
+        result['trace'] = trace
+    return result

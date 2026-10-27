@@ -81,7 +81,10 @@ def remote_lease(folder):
         write(folder/'ready.json', dict(model=MODEL, command_sha256=RECIPE, owned=owned, borrowed=borrowed,
             healthy=True, serving_flags={key:cmd[cmd.index(key)+1] for key in flags},
             meminfo=Path('/proc/meminfo').read_text().splitlines()[:3]))
-        deadline = time.monotonic()+3600
+        duration_path = folder/'lease_seconds'
+        duration = int(duration_path.read_text()) if duration_path.exists() else 3600
+        assert 60 <= duration <= 36000, 'Invalid benchmark lease duration'
+        deadline = time.monotonic()+duration
         while not (folder/'finish').exists():
             assert inspect(FAST)['State']['Running'] and not inspect(OLD)['State']['Running']
             assert time.monotonic()<deadline, 'Benchmark lease expired'
@@ -104,7 +107,11 @@ def remote_lease(folder):
 
 
 class ModelSession:
-    def __init__(self, output, name, port):
+    def __init__(self, output, name, port, *, lease_seconds=3600):
+        # Six-hour administrative bound covers600 paced scenes plus warmup.
+        # This changes no model recipe or inference parameter.
+        assert 60 <= lease_seconds <= 21600
+        self.lease_seconds = int(lease_seconds)
         self.output, self.port = Path(output), int(port)
         self.remote = '/home/csslab/shepherding/experiments/'+name
         self.token, self.tunnel = uuid.uuid4().hex, None
@@ -136,6 +143,7 @@ class ModelSession:
             self.ssh('import base64,subprocess\nfrom pathlib import Path\nr=Path('+repr(self.remote)+')\n'
                 'assert not r.exists(),"Existing lease must not be replaced"\nr.mkdir(parents=True)\n'
                 '(r/"owner_token").write_text('+repr(self.token)+')\n'
+                '(r/"lease_seconds").write_text('+repr(str(self.lease_seconds))+')\n'
                 '(r/"lease.py").write_bytes(base64.b64decode('+repr(payload)+'))\n'
                 'with (r/"lease.log").open("w") as log:\n'
                 ' p=subprocess.Popen(["python3","-u",str(r/"lease.py"),"--lease",str(r)],'

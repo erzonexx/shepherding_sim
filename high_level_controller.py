@@ -202,13 +202,7 @@ class HighLevelController:
                 completed_request = request
                 self.pending_request = None
                 if rejection_reason is None:
-                    target_delegation = (
-                        target_handoff.enabled(self.settings)
-                        and target_handoff.delegates(response.get('target_sheep_id'),
-                            validation_summary['delivery_rule_target_sheep_id'])
-                    )
-                    if target_delegation or (getattr(self.settings, 'HIGH_LEVEL_EXPLICIT_EXECUTION', False)
-                            and response.get('execution_policy') == 'FOLLOW_RULE'):
+                    if self._response_delegates_to_rule(response, validation_summary):
                         self._clear_active()
                         self.retry_after_frame = observation.frame + self.settings.HIGH_LEVEL_RETRY_FRAMES
                         return self._low_level_decision(
@@ -480,6 +474,16 @@ class HighLevelController:
             return None, None, "hold_frames_out_of_range"
         return mode, hold_frames, None
 
+    def _response_delegates_to_rule(self, response, summary):
+        return (
+            target_handoff.enabled(self.settings)
+            and target_handoff.delegates(response.get('target_sheep_id'),
+                summary['delivery_rule_target_sheep_id'])
+        ) or (
+            getattr(self.settings, 'HIGH_LEVEL_EXPLICIT_EXECUTION', False)
+            and response.get('execution_policy') == 'FOLLOW_RULE'
+        )
+
     @staticmethod
     def _forecast_preference_reversed(mode, request_summary, current_summary):
         request_rule = request_summary.get("rule_mode")
@@ -606,7 +610,7 @@ class HighLevelController:
         else:
             summary['selected_target_candidate'] = self._target_candidate(observation, mode, target, hold_frames)
 
-    def _target_candidate(self, observation, mode, target_id, hold_frames=None):
+    def _target_candidate(self, observation, mode, target_id, hold_frames=None, *, include_forecast=True):
         positions = observation.sheep_positions
         center = np.mean(positions, axis=0)
         goal_vectors = observation.goal_position - positions
@@ -631,6 +635,8 @@ class HighLevelController:
             positions, observation.dog_position, decision.drive_point,
             goal_distances, center_distances, goalward, outward,
         )
+        if not include_forecast:
+            return summary
         if target_handoff.enabled(self.settings):
             summary['forecast'] = target_handoff.forecast_action(observation, mode,
                 int(self.settings.HIGH_LEVEL_FORECAST_FRAMES) if hold_frames is None else hold_frames,
