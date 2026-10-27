@@ -4,7 +4,11 @@ logs/
 # Local reports, posters, and generated presentation work
 local_artifacts/
 project_docs/
+outputs/
 .codex_tmp/
+
+# Chat handoff notes (contain lab machine connection details)
+CHAT_HANDOFF_*.md
 
 # Local API credentials
 .env
